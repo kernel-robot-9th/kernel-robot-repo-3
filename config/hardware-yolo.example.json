@@ -1,0 +1,23 @@
+{
+  "armed": false,
+  "node_id": "gateway-a",
+  "evidence_directory": "runtime/observations",
+  "video": {"transport": "jpeg", "fps": 5},
+  "mobile_factory": null,
+  "act": null,
+  "yolo": {
+    "arm_name": "single",
+    "serial_by_id": null,
+    "camera_by_id": null,
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "pick_config": null,
+    "calibration_file": null,
+    "poses_file": null,
+    "drop_slots": {
+      "pinky-1": {"0": null, "1": null, "2": null},
+      "pinky-2": {"0": null, "1": null, "2": null}
+    }
+  }
+}

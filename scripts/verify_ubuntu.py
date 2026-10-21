@@ -14,8 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def source_digest():
     value = hashlib.sha256()
     paths = []
-    for folder in ["server", "robot_gateway", "tests", "scripts", "web/src"]:
+    for folder in ["server", "robot_gateway", "tests", "scripts", "web/src", "config"]:
         paths.extend(p for p in (ROOT / folder).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    paths.extend(p for p in (ROOT / 'integrations').rglob('*') if p.is_file()
+                 and p.suffix in {'.py', '.json', '.patch', '.txt'} and '__pycache__' not in p.parts
+                 and not {'config', 'records'}.intersection(p.relative_to(ROOT / 'integrations').parts))
     paths.extend(ROOT / p for p in ["pyproject.toml", "web/package.json", "web/vite.config.ts", "web/tsconfig.json"])
     for path in sorted(paths):
         value.update(str(path.relative_to(ROOT)).replace("\\", "/").encode())

@@ -1,0 +1,7 @@
+{
+  "approved": false,
+  "supported_skus": [],
+  "handoff_sides": [],
+  "right_model_id": null,
+  "note": "현장 장치·상품·주차·증거 전달을 검증한 뒤 로컬 파일에서만 승인한다. 실물·모의 DB를 분리한다."
+}

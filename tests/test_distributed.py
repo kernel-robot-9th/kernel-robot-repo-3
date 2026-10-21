@@ -46,8 +46,8 @@ def test_three_nodes_two_customers_and_shared_world(dist):
     e, _ = dist
     customers = [e.create_session(name)['session_id'] for name in ['A', 'B']]
     assert len({e.state['sessions'][sid]['robot_id'] for sid in customers}) == 2
-    for sid in customers:
-        e.submit_order(sid, [{'sku': 'DEMO-APPLE', 'quantity': 1}, {'sku': 'DEMO-SNACK', 'quantity': 1}], 'request-' + sid)
+    for index, sid in enumerate(customers):
+        e.submit_order(sid, [{'sku': ['SKU-JIN-RAMEN', 'SKU-SHIN-RAMEN'][index], 'quantity': 1}, {'sku': 'SKU-RICE-CHIP', 'quantity': 1}], 'request-' + sid)
         e.checkout(sid)
     saw_wait = any(z['queue'] for z in e.state['zones'].values())
     for _ in range(200):
@@ -73,7 +73,7 @@ def test_three_nodes_two_customers_and_shared_world(dist):
 def test_auth_identity_and_cross_node_event_rejected(dist):
     e, _ = dist
     sid = e.create_session('A')['session_id']
-    e.submit_order(sid, [{'sku': 'DEMO-APPLE', 'quantity': 1}], 'request-0001')
+    e.submit_order(sid, [{'sku': 'SKU-JIN-RAMEN', 'quantity': 1}], 'request-0001')
     cmd = e.node_claim('gateway-a', NODES['gateway-a'])
     assert e.node_claim('gateway-b', NODES['gateway-b']) is None
     with pytest.raises(DomainError):
@@ -89,7 +89,7 @@ def test_auth_identity_and_cross_node_event_rejected(dist):
 def test_expired_b_does_not_disconnect_a_or_c(dist):
     e, clock = dist
     sid = e.create_session('A')['session_id']
-    e.submit_order(sid, [{'sku': 'DEMO-APPLE', 'quantity': 1}], 'request-0001')
+    e.submit_order(sid, [{'sku': 'SKU-JIN-RAMEN', 'quantity': 1}], 'request-0001')
     for seconds in [5, 5, 1]:
         clock.now += seconds
         for n in ['gateway-a', 'gateway-c']:
@@ -104,7 +104,7 @@ def test_expired_b_does_not_disconnect_a_or_c(dist):
 def test_active_b_fault_retains_zone_and_restart_cannot_replay(dist):
     e, clock = dist
     sid = e.create_session('A')['session_id']
-    e.submit_order(sid, [{'sku': 'DEMO-SNACK', 'quantity': 1}], 'request-0001')
+    e.submit_order(sid, [{'sku': 'SKU-RICE-CHIP', 'quantity': 1}], 'request-0001')
     for _ in range(20):
         for n in NODES:
             step(e, n)
@@ -137,7 +137,7 @@ def test_duplicate_instance_cannot_displace_live_node(dist):
 def test_mock_action_and_report_retries_do_not_repeat_cargo(dist):
     e, _ = dist
     sid = e.create_session('A')['session_id']
-    e.submit_order(sid, [{'sku': 'DEMO-APPLE', 'quantity': 1}], 'request-0001')
+    e.submit_order(sid, [{'sku': 'SKU-JIN-RAMEN', 'quantity': 1}], 'request-0001')
     for _ in range(20):
         step(e, 'gateway-a')
         pick = next((c for c in e.state['commands'].values() if c['kind'] == 'PICK' and c['status'] == 'ACCEPTED'), None)
@@ -154,7 +154,7 @@ def test_mock_action_and_report_retries_do_not_repeat_cargo(dist):
 def test_mock_pick_failure_stops_and_does_not_add_inventory(dist):
     e, _ = dist
     sid = e.create_session('A')['session_id']
-    e.submit_order(sid, [{'sku': 'DEMO-APPLE', 'quantity': 1}], 'request-0001')
+    e.submit_order(sid, [{'sku': 'SKU-JIN-RAMEN', 'quantity': 1}], 'request-0001')
     e.inject_failure('omx-a', 'PICK_FAIL')
     for _ in range(30):
         step(e, 'gateway-a')
@@ -180,7 +180,7 @@ def test_server_restart_keeps_unconfirmed_task_blocked(tmp_path):
     engine = DistributedEngine(path, clock=clock)
     engine.node_heartbeat('gateway-a', NODES['gateway-a'])
     sid = engine.create_session('A')['session_id']
-    engine.submit_order(sid, [{'sku': 'DEMO-APPLE', 'quantity': 1}], 'request-0001')
+    engine.submit_order(sid, [{'sku': 'SKU-JIN-RAMEN', 'quantity': 1}], 'request-0001')
     command = engine.node_claim('gateway-a', NODES['gateway-a'])
     engine.node_event('gateway-a', NODES['gateway-a'], make_event(command, 'ACCEPTED'))
     engine.store.close()

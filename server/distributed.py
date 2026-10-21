@@ -89,8 +89,8 @@ class DistributedEngine(Engine):
             device = self.state["devices"][device_id]
             device["connected"] = not device["forced_offline"]
         if old != instance_id:
-            self._log("gateway_connected", {"gateway_id": node_id, "devices": node["devices"], "mode": "mock"})
-        return {"run_id": self.state["run_id"], "mode": "mock", "devices": node["devices"],
+            self._log("gateway_connected", {"gateway_id": node_id, "devices": node["devices"], "mode": self.mode})
+        return {"run_id": self.state["run_id"], "mode": self.mode, "devices": node["devices"],
                 "heartbeat_timeout": self.heartbeat_timeout}
 
     @atomic
@@ -139,6 +139,7 @@ class DistributedEngine(Engine):
 
     @atomic
     def mock_action(self, node_id, instance_id, command_id, action):
+        require(self.mode == "mock", "실물 모드에 가상 결과를 만들 수 없습니다")
         command = self._owned_command(node_id, instance_id, command_id)
         require(action in {"EXECUTE", "STOPPED", "ARM_CLEAR", "EXITED"}, "지원하지 않는 모의 동작", 422)
         key = command_id + ":" + action
@@ -173,7 +174,7 @@ class DistributedEngine(Engine):
                 self._log("gateway_disconnected", {"gateway_id": node_id})
         for command in list(self.state["commands"].values()):
             if (command["kind"] != "STOP" and command["status"] in {"SENT", "ACCEPTED"}
-                    and self.clock() - command["sent_at"] > self.command_timeout):
+                    and self.clock() - command["sent_at"] > command.get("timeout_seconds", self.command_timeout)):
                 self._fault(self.state["tasks"][command["task_id"]], "명령 결과 시간 초과: 성공 여부 불명")
 
     def snapshot(self, sid=None):

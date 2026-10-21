@@ -38,7 +38,7 @@ class Store:
                     "INSERT INTO audit(run_id,at,kind,session_id,task_id,command_id,mode,detail_json) "
                     "VALUES(?,?,?,?,?,?,?,?)",
                     (state["run_id"], record["at"], record["kind"], record.get("session_id"),
-                     record.get("task_id"), record.get("command_id"), "mock",
+                     record.get("task_id"), record.get("command_id"), state["mode"],
                      json.dumps(record["detail"], ensure_ascii=False)),
                 )
                 if record["kind"] == "item_confirmed":
@@ -46,7 +46,7 @@ class Store:
                     self.db.execute(
                         "INSERT INTO movements VALUES(?,?,?,?,?,?,?,?)",
                         (state["run_id"], record["command_id"], item["slot"], record["session_id"],
-                         item["sku"], item["direction"], record["at"], "mock"),
+                         item["sku"], item["direction"], record["at"], state["mode"]),
                     )
             self.db.execute("INSERT OR REPLACE INTO checkpoint VALUES(1,?)",
                             (json.dumps(state, ensure_ascii=False),))

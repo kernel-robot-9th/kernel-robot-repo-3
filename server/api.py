@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from .domain import DomainError, Engine
 from .distributed import DistributedEngine
+from .video import VIDEO_PATH, VideoRegistry
 
 
 class Input(BaseModel):
@@ -40,6 +41,7 @@ class Gateway(Input):
 class NodeConnection(Input):
     node_id: str = Field(min_length=1, max_length=80)
     instance_id: str = Field(min_length=8, max_length=80)
+    mode: Literal['mock', 'hardware'] = 'mock'
 
 
 class NodeEvent(NodeConnection):
@@ -58,9 +60,9 @@ class DeviceEvent(Input):
     task_id: str
     session_id: str
     device_id: str
-    mode: Literal["mock"]
+    mode: Literal["mock", "hardware"]
     observed_at: float = Field(allow_inf_nan=False)
-    kind: Literal["ACCEPTED", "SUCCEEDED", "FAILED", "STOPPED", "ARM_CLEAR", "EXITED"]
+    kind: Literal["ACCEPTED", "SUCCEEDED", "FAILED", "STOPPED", "ARM_CLEAR", "EXITED", "TRANSFER_READY"]
     data: dict = Field(default_factory=dict)
 
 
@@ -83,7 +85,15 @@ class Device(Input):
     device_id: str
 
 
-def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=None):
+class NewRun(Input):
+    acknowledge_unresolved: bool = False
+
+
+class VideoFault(Input):
+    kind: Literal['none', 'freeze', 'offline']
+
+
+def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=None, video=None):
     injected = engine is not None
     admin_token = admin_token or os.getenv("SHOP_ADMIN_TOKEN", "")
     gateway_token = gateway_token or os.getenv("SHOP_GATEWAY_TOKEN", "")
@@ -92,6 +102,7 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     node_tokens = node_tokens if node_tokens is not None else json.loads(os.getenv("SHOP_NODE_TOKENS", "{}"))
     distributed = isinstance(engine, DistributedEngine) or (engine is None and os.getenv("SHOP_GATEWAY_MODE") == "distributed")
     security = HTTPBearer(auto_error=False)
+    video = video or VideoRegistry(os.getenv('SHOP_VIDEO_CONFIG', str(VIDEO_PATH)))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -116,7 +127,13 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
             except OSError:
                 lockfile.close()
                 raise RuntimeError("다른 작업 제어 서버가 이 DB를 사용 중입니다. workers=1로 실행하세요.")
-        app.state.engine = engine if injected else (DistributedEngine(database) if distributed else Engine(database))
+        mode = os.getenv('SHOP_DEVICE_MODE', 'mock')
+        if not injected and mode == 'hardware' and not distributed:
+            raise RuntimeError('실물 연결은 분산 중계 모드에서만 지원합니다')
+        readiness_path = os.getenv('SHOP_HARDWARE_READINESS')
+        readiness = json.loads(Path(readiness_path).read_text(encoding='utf-8')) if readiness_path else None
+        app.state.engine = engine if injected else (DistributedEngine(database, mode=mode, readiness=readiness)
+                                                    if distributed else Engine(database, mode=mode, readiness=readiness))
 
         async def monitor():
             while True:
@@ -176,15 +193,15 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         return JSONResponse(status_code=exc.status, content={"detail": exc.message})
 
     @app.get("/api/health")
-    def health():
-        return {"status": "ok", "mode": "mock", "gateway_mode": "distributed" if distributed else "single",
+    def health(e=Depends(control)):
+        return {"status": "ok", "mode": e.mode, "gateway_mode": "distributed" if distributed else "single",
                 "preview_id": os.getenv("SHOP_PREVIEW_ID"),
                 "physical_hardware_verified": False}
 
     @app.get("/api/products")
     def products(e=Depends(control)):
         snapshot = e.snapshot()
-        return {"items": snapshot["products"], "capacity": snapshot["capacity"], "mode": "mock"}
+        return {"items": snapshot["products"], "capacity": snapshot["capacity"], "cart_capacity": snapshot['cart_capacity'], "mode": e.mode}
 
     @app.post("/api/sessions", status_code=201)
     def start(body: Start, e=Depends(control)):
@@ -198,6 +215,10 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     def order(body: Order, sid=Depends(customer), e=Depends(control)):
         return e.submit_order(sid, [item.model_dump() for item in body.items], body.request_id)
 
+    @app.post("/api/customer/orders/{order_id}/cancel")
+    def cancel(order_id: str, sid=Depends(customer), e=Depends(control)):
+        return e.cancel_order(sid, order_id)
+
     @app.post("/api/customer/checkout")
     def checkout(sid=Depends(customer), e=Depends(control)):
         return e.checkout(sid)
@@ -209,6 +230,47 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     @app.get("/api/admin/logs", dependencies=[Depends(admin)])
     def logs(e=Depends(control)):
         return {"items": e.logs()}
+
+    @app.get('/api/admin/video', dependencies=[Depends(admin)])
+    def video_list():
+        return {'items': video.describe()}
+
+    @app.get('/api/admin/video/{feed_id}/frame', dependencies=[Depends(admin)])
+    def video_frame(feed_id: str):
+        content, media_type, headers = video.frame(feed_id)
+        return Response(content, media_type=media_type, headers=headers)
+
+    @app.post('/api/admin/video/{feed_id}/mock-fault', dependencies=[Depends(admin)])
+    def video_fault(feed_id: str, body: VideoFault):
+        video.fault(feed_id, body.kind)
+        return {'recorded': True}
+
+    async def read_frame(request):
+        chunks, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > video.max_bytes:
+                raise HTTPException(413, '프레임은 512KiB 이하여야 합니다')
+            chunks.append(chunk)
+        return b''.join(chunks)
+
+    @app.post('/api/nodes/video/{feed_id}/frame')
+    async def node_video(feed_id: str, request: Request, instance_id: str, sequence: int,
+                         principal=Depends(node_auth), e=Depends(control)):
+        e.node_work(principal, instance_id)
+        content = await read_frame(request)
+        e.node_work(principal, instance_id)
+        video.publish(feed_id, principal, instance_id, sequence, content)
+        return {'received': True}
+
+    @app.post('/api/video/overview/frame')
+    async def overview_video(request: Request, instance_id: str, sequence: int,
+                             credentials: HTTPAuthorizationCredentials | None = Depends(security)):
+        expected = os.getenv('SHOP_OVERVIEW_TOKEN', '')
+        if len(expected) < 16 or not hmac.compare_digest(token_value(credentials), expected):
+            raise HTTPException(401, '전경 영상 게시 인증 실패')
+        video.publish('overview', 'central', instance_id, sequence, await read_frame(request))
+        return {'received': True}
 
     @app.post("/api/admin/basket-ready", dependencies=[Depends(admin)])
     def basket(body: Basket, e=Depends(control)):
@@ -225,8 +287,8 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         return {"recorded": True}
 
     @app.post("/api/admin/mock/new-run", dependencies=[Depends(admin)])
-    def new_run(e=Depends(control)):
-        return e.reset_mock()
+    def new_run(body: NewRun, e=Depends(control)):
+        return e.reset_mock(body.acknowledge_unresolved)
 
     @app.post("/api/gateway/heartbeat", dependencies=[Depends(gateway)])
     def heartbeat(body: Gateway, e=Depends(control)):
@@ -255,6 +317,8 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     @app.post("/api/nodes/heartbeat")
     def node_heartbeat(body: NodeConnection, principal=Depends(node_auth), e=Depends(control)):
         owned(body, principal)
+        if body.mode != e.mode:
+            raise HTTPException(409, '중계와 중앙의 장비 모드가 다릅니다')
         return e.node_heartbeat(body.node_id, body.instance_id)
 
     @app.post("/api/nodes/commands/claim")

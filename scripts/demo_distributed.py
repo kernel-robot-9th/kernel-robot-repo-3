@@ -32,7 +32,7 @@ def scenario(name, root):
             time.sleep(0.1)
         else:
             raise AssertionError('중개 3개 연결 시간 초과')
-        sku = 'DEMO-SNACK' if name == 'disconnect' else 'DEMO-APPLE'
+        sku = 'SKU-RICE-CHIP' if name == 'disconnect' else 'SKU-JIN-RAMEN'
         if name == 'pick-failure':
             admin.call('/api/admin/mock/fault', {'device_id': 'omx-a', 'kind': 'PICK_FAIL'})
         killed = False
@@ -43,9 +43,10 @@ def scenario(name, root):
             group.children['gateway-b'].wait(timeout=5)
             killed = True
         for index, (guest, client) in enumerate(guests):
-            items = [{'sku': sku, 'quantity': 1}]
+            selected_sku = 'SKU-SHIN-RAMEN' if index == 1 and sku == 'SKU-JIN-RAMEN' else sku
+            items = [{'sku': selected_sku, 'quantity': 1}]
             if name == 'complete':
-                items.append({'sku': 'DEMO-SNACK', 'quantity': 1})
+                items.append({'sku': 'SKU-RICE-CHIP', 'quantity': 3})
             client.call('/api/customer/orders', {'request_id': f'http-order-{index:04d}', 'items': items})
             client.call('/api/customer/checkout', {})
         saw_wait = False
@@ -63,7 +64,8 @@ def scenario(name, root):
                 if all(s['state'] == 'COMPLETED' and s['current_task'] is None for s in sessions):
                     assert saw_wait
                     assert len({s['robot_id'] for s in sessions}) == 2
-                    assert all(len(s['inventory']) == 2 and all(i['delivered'] for i in s['inventory']) for s in sessions)
+                    assert all(len(s['inventory']) == 4 and all(i['delivered'] for i in s['inventory']) for s in sessions)
+                    assert len(snapshot['trips']) == 4
                     assert all(z['owner'] is None for z in snapshot['zones'].values())
                     break
             elif name == 'pick-failure' and any(s['error'] for s in sessions):

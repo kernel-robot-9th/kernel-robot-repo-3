@@ -79,11 +79,16 @@ class MockWorld:
                 data["confirmed_items"] = self.execute_items(cmd)
                 if cmd["kind"] == "HANDOFF":
                     data["basket_id"] = cmd["basket_id"]
+                    data.update(cart_visible=True, cart_empty=not self.data["baskets"][cmd["robot_id"]],
+                                last_item_placed=True, standby_reached=True)
+                    return make_event(cmd, "TRANSFER_READY", data)
             elif cmd["kind"] == "LEAVE":
                 self.leave(cmd)
             elif cmd["kind"] == "STOP":
                 self.stop(cmd)
                 data["stopped"] = True
+            elif cmd["kind"] == "STOP_POLICY":
+                data.update(policy_stopped=True, motion_stopped=True, hold_confirmed=True, torque_enabled=True)
             else:
                 raise ValueError("지원하지 않는 모의 명령")
             return make_event(cmd, "SUCCEEDED", data)
@@ -172,6 +177,8 @@ def run():
     while True:
         try:
             hello = client.call("/api/gateway/heartbeat", {"gateway_id": gateway_id})
+            if hello['mode'] != 'mock':
+                raise RuntimeError('모의 실행부는 실물 모드에 연결할 수 없습니다')
             if hello["run_id"] != state["run_id"]:
                 state.update(run_id=hello["run_id"], pending=None)
                 world = MockWorld()

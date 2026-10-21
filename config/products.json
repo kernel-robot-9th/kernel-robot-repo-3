@@ -1,0 +1,12 @@
+[
+  {"sku": "SKU-JIN-RAMEN", "name": "진라면", "detector_class": "jin_ramen", "class_id": 0, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-SHIN-RAMEN", "name": "신라면", "detector_class": "shin_ramen", "class_id": 1, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-SEOUL-MILK", "name": "서울우유", "detector_class": "seoul_milk", "class_id": 2, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-BANANA-MILK-BOTTLE", "name": "바나나우유 — 병", "detector_class": "banana_milk_bottle", "class_id": 3, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-BANANA-MILK-CARTON", "name": "바나나우유 — 팩", "detector_class": "banana_milk_carton", "class_id": 4, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-M-AND-MS", "name": "M&M's", "detector_class": "m_and_ms", "class_id": 5, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-CHEETOS", "name": "치토스", "detector_class": "cheetos", "class_id": 6, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-CHOCO-PIE", "name": "초코파이", "detector_class": "choco_pie", "class_id": 7, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-SHRIMP-CRACKER", "name": "새우깡", "detector_class": "shrimp_cracker", "class_id": 8, "station": "load-a", "initial_stock": 1, "physical_support": "unverified"},
+  {"sku": "SKU-RICE-CHIP", "name": "라이스칩", "detector_class": "rice_chip", "class_id": 9, "station": "load-b", "initial_stock": 8, "physical_support": "unverified"}
+]

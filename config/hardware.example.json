@@ -1,0 +1,22 @@
+{
+  "armed": false,
+  "node_id": "gateway-c",
+  "evidence_directory": "runtime/observations",
+  "video": {"transport": "jpeg", "fps": 5},
+  "mobile_factory": null,
+  "yolo": null,
+  "act": {
+    "serial_by_id": null,
+    "front_by_id": null,
+    "wrist_by_id": null,
+    "robot_id": "omx_follower_arm",
+    "calibration_dir": null,
+    "max_relative_target": null,
+    "standby_pose": null,
+    "position_tolerance": null,
+    "models": {
+      "left": {"id": "act-left-v2-050000", "path": "~/omx_models/omx_left_act_v2/050000/pretrained_model"},
+      "right": null
+    }
+  }
+}

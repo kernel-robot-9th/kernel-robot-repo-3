@@ -10,13 +10,9 @@ import threading
 import time
 import uuid
 
+from .catalog import PRODUCTS_PATH, load_products
 from .store import Store
 
-PRODUCTS = [
-    {"sku": "DEMO-APPLE", "name": "모의 사과", "station": "load-a"},
-    {"sku": "DEMO-JUICE", "name": "모의 주스", "station": "load-a"},
-    {"sku": "DEMO-SNACK", "name": "모의 과자", "station": "load-b"},
-]
 STATIONS = {"load-a": "omx-a", "load-b": "omx-b", "handoff": "omx-handoff"}
 TERMINAL = {"SUCCEEDED", "FAILED", "UNCERTAIN", "CANCELLED"}
 
@@ -70,14 +66,26 @@ def atomic(method):
 class Engine:
     # These are mock development limits, NOT measured physical tolerances.
     capacity = 6
+    cart_capacity = 3
     observation_ttl = 300
     command_timeout = 120
     heartbeat_timeout = 10
 
-    def __init__(self, path=":memory:", clock=time.time):
+    def __init__(self, path=":memory:", clock=time.time, *, catalog_path=PRODUCTS_PATH, mode="mock", readiness=None):
+        require(mode in {"mock", "hardware"}, "장비 모드 오류", 422)
+        self.mode, self.readiness = mode, readiness or {}
+        if mode == "hardware":
+            require(self.readiness.get("approved") is True, "현장 연결 검증 설정이 필요합니다")
+            # Field adapters must continuously report parking/basket observations.
+            # Never reuse the generous manual-step MOCK observation window.
+            self.observation_ttl = 2
+        self.products = load_products(catalog_path)
         self.clock, self.lock, self.records = clock, threading.RLock(), []
         self.store = Store(path)
         stored = self.store.load()
+        if stored and stored["mode"] != mode:
+            self.store.close()
+            raise DomainError("모의·실물 DB를 분리하세요")
         self.state = stored or self._fresh()
         if stored:
             self._recover()
@@ -86,7 +94,10 @@ class Engine:
 
     def _fresh(self):
         return {
-            "run_id": uid(), "mode": "mock", "sessions": {}, "orders": {}, "tasks": {},
+            "schema_version": 2, "units": {}, "trips": {},
+            "stock": {sku: {"on_hand": p["initial_stock"], "reserved": 0} for sku, p in self.products.items()},
+            "catalog_reconciliation_required": False,
+            "run_id": uid(), "mode": self.mode, "sessions": {}, "orders": {}, "tasks": {},
             "commands": {}, "results": {}, "gateway_id": None, "heartbeat_at": None,
             "permits": 0, "pick_failures": [], "basket": None,
             "devices": {name: {"connected": False, "forced_offline": False}
@@ -104,6 +115,18 @@ class Engine:
                              "command_id": command["id"] if command else None})
 
     def _recover(self):
+        # Never invent current stock for an earlier checkpoint or a changed catalog.
+        legacy = self.state.get("schema_version") != 2
+        if legacy:
+            self.state.update(schema_version=2, units={}, trips={}, stock={}, catalog_reconciliation_required=True)
+        if set(self.state["stock"]) != set(self.products):
+            self.state["catalog_reconciliation_required"] = True
+        for session in self.state["sessions"].values():
+            session.setdefault("active_trip", None)
+            session.setdefault("basket_side", None)
+            session.setdefault("receipt_confirmed_at", None)
+            if legacy and session["state"] != "COMPLETED":
+                session.update(state="RECOVERY_REQUIRED", error="이전 실행 보존: 새 모의 시나리오 준비 필요")
         self.state["gateway_id"] = None
         self.state["heartbeat_at"] = None
         self.state["basket"] = None
@@ -134,6 +157,8 @@ class Engine:
         require(available, "사용 가능한 로봇이 없습니다. 기존 고객 인계·이탈 후 다시 시작하세요")
         sid, token = uid(), secrets.token_urlsafe(32)
         session = {"id": sid, "label": label.strip(), "robot_id": available, "basket_id": "basket-" + sid,
+                   "basket_side": "left" if available == "pinky-1" else "right", "active_trip": None,
+                   "receipt_confirmed_at": None,
                    "token_hash": hashlib.sha256(token.encode()).hexdigest(), "state": "SHOPPING",
                    "checkout_requested": False, "current_task": None, "inventory": [],
                    "error": None, "created_at": self.clock(), "completed_at": None}
@@ -166,9 +191,10 @@ class Engine:
         normalized = {}
         for item in items:
             sku, qty = item.get("sku"), item.get("quantity")
-            require(sku in {p["sku"] for p in PRODUCTS} and type(qty) is int and 1 <= qty <= self.capacity,
+            require(sku in self.products and type(qty) is int and 1 <= qty <= self.capacity,
                     "지원 상품과 허용 수량을 확인하세요", 422)
-            normalized[sku] = normalized.get(sku, 0) + qty
+            require(sku not in normalized, "중복 SKU 행은 허용하지 않습니다", 422)
+            normalized[sku] = qty
         require(normalized, "한 개 이상의 상품이 필요합니다", 422)
         for order in self.state["orders"].values():
             if order["session_id"] == sid and order["request_id"] == request_id:
@@ -176,18 +202,95 @@ class Engine:
                 return deepcopy(order)
         require(not session["checkout_requested"] and session["state"] == "SHOPPING" and not session["error"],
                 "지금은 추가 주문을 받을 수 없습니다")
-        used = sum(sum(o["items"].values()) for o in self.state["orders"].values() if o["session_id"] == sid)
-        require(used + sum(normalized.values()) <= self.capacity, "모의 바구니 최대 6개를 초과했습니다")
+        require(not self.state["catalog_reconciliation_required"], "기존 실행의 재고 확인이 필요합니다")
+        require(sum(normalized.values()) <= self.capacity, "한 주문은 최대 6개입니다", 422)
+        for sku, qty in normalized.items():
+            if self.mode == "hardware":
+                require(sku in self.readiness.get("supported_skus", []), "실물 집기·하역 검증 전 상품입니다")
+                require(session["basket_side"] in self.readiness.get("handoff_sides", []), "해당 방향 모델이 준비되지 않았습니다")
+            stock = self.state["stock"][sku]
+            require(qty <= stock["on_hand"] - stock["reserved"], "주문 가능 재고가 부족합니다: " + self.products[sku]["name"])
         order = {"id": uid(), "session_id": sid, "request_id": request_id,
-                 "items": normalized, "created_at": self.clock()}
+                 "items": normalized, "created_at": self.clock(), "status": "ACTIVE", "cancelled_at": None}
         self.state["orders"][order["id"]] = order
         for sku, qty in normalized.items():
-            product = next(p for p in PRODUCTS if p["sku"] == sku)
-            task_items = [{"sku": sku, "slot": used + i} for i in range(qty)]
-            used += qty
-            self._task(session, "LOAD", product["station"], task_items, order["id"])
+            self.state["stock"][sku]["reserved"] += qty
+            for _ in range(qty):
+                item_id = uid()
+                self.state["units"][item_id] = {"id": item_id, "order_id": order["id"], "session_id": sid,
+                    "sku": sku, "state": "RESERVED", "trip_id": None, "slot": None}
         self._log("order_received", {"order_id": order["id"], "items": normalized}, session_id=sid)
         return deepcopy(order)
+
+    @atomic
+    def cancel_order(self, sid, order_id):
+        session = self._session(sid)
+        order = self.state["orders"].get(order_id)
+        require(order and order["session_id"] == sid, "주문을 찾을 수 없습니다", 404)
+        if order.get("status") == "CANCELLED":
+            return deepcopy(order)
+        require(not session["error"], "결과 불명·오류 작업은 자동 취소할 수 없습니다")
+        tasks = [t for t in self.state["tasks"].values() if t.get("order_id") == order_id]
+        task_ids = {t["id"] for t in tasks}
+        require(not any(c["task_id"] in task_ids and c["sent_at"] is not None
+                        for c in self.state["commands"].values()), "장비 명령 전송 후에는 자동 취소할 수 없습니다")
+        units = [u for u in self.state["units"].values() if u["order_id"] == order_id]
+        require(all(u["state"] in {"RESERVED", "PLANNED"} for u in units), "이미 출고된 상품이 있습니다")
+        for task in tasks:
+            zone = self.state["zones"][task["zone_id"]]
+            if task["id"] in zone["queue"]:
+                zone["queue"].remove(task["id"])
+            if zone["owner"] == task["id"]:
+                zone["owner"] = None
+            task["state"] = "CANCELLED"
+            if session["current_task"] == task["id"]:
+                session["current_task"] = None
+        for cmd in self.state["commands"].values():
+            if cmd["task_id"] in task_ids:
+                cmd["status"] = "CANCELLED"
+        for unit in units:
+            self.state["stock"][unit["sku"]]["reserved"] -= 1
+            unit["state"] = "CANCELLED"
+        order.update(status="CANCELLED", cancelled_at=self.clock())
+        self._log("order_cancelled", {"order_id": order_id}, session_id=sid)
+        return deepcopy(order)
+
+    def _plan_trip(self, session):
+        trip = self.state["trips"].get(session.get("active_trip"))
+        if trip and trip["state"] != "LOADING":
+            return
+        occupied = [self.state["units"][i] for i in trip["unit_ids"]
+                    if self.state["units"][i]["state"] != "CANCELLED"] if trip else []
+        available_slots = [slot for slot in range(self.cart_capacity) if slot not in {u["slot"] for u in occupied}]
+        pending = [u for u in self.state["units"].values()
+                   if u["session_id"] == session["id"] and u["state"] == "RESERVED"][:len(available_slots)]
+        if not pending:
+            return
+        if not trip:
+            trip = {"id": uid(), "session_id": session["id"], "number": 1 + sum(
+                t["session_id"] == session["id"] for t in self.state["trips"].values()),
+                "unit_ids": [], "state": "LOADING"}
+            self.state["trips"][trip["id"]] = trip
+            session["active_trip"] = trip["id"]
+        groups = {}
+        for unit, slot in zip(pending, available_slots):
+            unit.update(state="PLANNED", trip_id=trip["id"], slot=slot)
+            trip["unit_ids"].append(unit["id"])
+            key = (unit["order_id"], self.products[unit["sku"]]["station"])
+            groups.setdefault(key, []).append({"sku": unit["sku"], "slot": slot, "item_id": unit["id"]})
+        for (order_id, station), items in groups.items():
+            task = self._task(session, "LOAD", station, items, order_id)
+            task["trip_id"] = trip["id"]
+
+    def _complete_shopping(self, session, task=None):
+        units = [u for u in self.state["units"].values()
+                 if u["session_id"] == session["id"] and u["state"] != "CANCELLED"]
+        if session["checkout_requested"] and all(u["state"] == "DELIVERED" for u in units):
+            session.update(state="COMPLETED", completed_at=self.clock())
+            self._log("shopping_completed", {"customer_mobile_receipt": "not_implemented_optional_SR29"},
+                      task=task, session_id=session["id"])
+            return True
+        return False
 
     @atomic
     def checkout(self, sid):
@@ -204,11 +307,20 @@ class Engine:
     def _command(self, task, kind, device_id):
         cmd = {"id": uid(), "run_id": self.state["run_id"], "task_id": task["id"],
                "session_id": task["session_id"], "robot_id": task["robot_id"], "device_id": device_id,
-               "mode": "mock", "kind": kind, "zone_id": task["zone_id"], "items": deepcopy(task["items"]),
+               "mode": self.mode, "kind": kind, "zone_id": task["zone_id"], "items": deepcopy(task["items"]),
                "status": "CREATED", "created_at": self.clock(), "sent_at": None,
                "accepted_at": None, "result": None}
         if kind == "HANDOFF":
             cmd["basket_id"] = self.state["basket"]["basket_id"]
+            cmd["basket_side"] = self._session(task["session_id"])["basket_side"]
+            cmd["model_id"] = "act-left-v2-050000" if cmd["basket_side"] == "left" else self.readiness.get("right_model_id", "act-right-pending")
+            cmd["max_runtime_seconds"] = 180
+            cmd["n_action_steps"] = 100
+        cmd["trip_id"] = task.get("trip_id")
+        if kind == "STOP_POLICY":
+            cmd["target_command_id"] = next(c["id"] for c in self.state["commands"].values()
+                                            if c["task_id"] == task["id"] and c["kind"] == "HANDOFF")
+        cmd["timeout_seconds"] = 200 if kind == "HANDOFF" else (10 if kind == "STOP_POLICY" else self.command_timeout)
         self.state["commands"][cmd["id"]] = cmd
         self._log("command_created", {"kind": kind, "device_id": device_id}, command=cmd)
         return cmd
@@ -226,14 +338,19 @@ class Engine:
             if session["error"] or session["state"] == "COMPLETED":
                 continue
             if session["current_task"] is None:
+                self._plan_trip(session)
                 task = next((t for t in self.state["tasks"].values()
                              if t["session_id"] == session["id"] and t["state"] == "QUEUED"), None)
                 if task is None and session["checkout_requested"]:
                     outstanding = [i for i in session["inventory"] if not i["delivered"]]
                     if outstanding:
                         task = self._task(session, "HANDOFF", "handoff",
-                                          [{"sku": i["sku"], "slot": i["slot"]} for i in outstanding])
+                                          [{"sku": i["sku"], "slot": i["slot"], "item_id": i["item_id"]} for i in outstanding])
+                        task["trip_id"] = session["active_trip"]
+                        self.state["trips"][session["active_trip"]]["state"] = "HANDOFF"
                         session["state"] = "DELIVERING"
+                    elif self._complete_shopping(session):
+                        self.state["robots"][session["robot_id"]]["session_id"] = None
                 if task:
                     session["current_task"] = task["id"]
                     task["state"] = "WAIT_ZONE"
@@ -289,7 +406,7 @@ class Engine:
             device["connected"] = not device["forced_offline"]
         if old != gateway_id:
             self._log("gateway_connected", {"gateway_id": gateway_id})
-        return {"run_id": self.state["run_id"], "mode": "mock"}
+        return {"run_id": self.state["run_id"], "mode": self.mode}
 
     def _validate_gateway(self, gateway_id):
         require(gateway_id == self.state["gateway_id"] and self._fresh_gateway(), "현재 연결 프로그램 인증 상태가 아닙니다")
@@ -323,7 +440,7 @@ class Engine:
 
     @atomic
     def event(self, event):
-        require(event["run_id"] == self.state["run_id"] and event["mode"] == "mock", "실행 또는 연결 모드 불일치")
+        require(event["run_id"] == self.state["run_id"] and event["mode"] == self.mode, "실행 또는 연결 모드 불일치")
         require(event["command_id"] in self.state["commands"], "알 수 없는 명령", 404)
         cmd = self.state["commands"][event["command_id"]]
         for field in ["task_id", "session_id", "device_id"]:
@@ -336,6 +453,10 @@ class Engine:
         task = self.state["tasks"][cmd["task_id"]]
         session = self._session(cmd["session_id"])
         result = {"kind": kind, "data": data}
+        if kind == 'TRANSFER_READY' and cmd.get('transfer'):
+            require(cmd['transfer'] == data, '이미 확인된 인계 근거와 충돌합니다')
+            self.state['results'][key] = fingerprint
+            return {'duplicate': True}
         if kind in {"SUCCEEDED", "FAILED"} and cmd["result"]:
             require(cmd["result"] == result, "이미 확정된 결과와 충돌합니다")
             self.state["results"][key] = fingerprint
@@ -346,9 +467,9 @@ class Engine:
         require(self._fresh_gateway() and self.state["devices"][cmd["device_id"]]["connected"], "연결 상태 미확인")
         require(session["current_task"] == task["id"], "현재 작업의 관측이 아닙니다")
         if kind in {"ACCEPTED", "SUCCEEDED", "FAILED"} and cmd["kind"] != "STOP":
-            require(cmd["sent_at"] is not None and self.clock() - cmd["sent_at"] <= self.command_timeout,
+            require(cmd["sent_at"] is not None and self.clock() - cmd["sent_at"] <= cmd.get("timeout_seconds", self.command_timeout),
                     "명령 결과 수신 기한이 지났습니다. 상태 확인이 필요합니다")
-        if kind in {"STOPPED", "ARM_CLEAR", "EXITED"}:
+        if kind in {"STOPPED", "ARM_CLEAR", "EXITED", "TRANSFER_READY"}:
             at = event.get("observed_at")
             require(type(at) in {float, int} and math.isfinite(at) and self._fresh_observation(at),
                     "오래됐거나 미래 시각인 관측입니다", 422)
@@ -357,50 +478,42 @@ class Engine:
             cmd["status"], cmd["accepted_at"] = "ACCEPTED", self.clock()
         elif kind in {"SUCCEEDED", "FAILED"}:
             require(cmd["status"] == "ACCEPTED", "명령 수락 전에 결과를 확정할 수 없습니다")
+            require(not (cmd["kind"] == "HANDOFF" and kind == "SUCCEEDED"),
+                    "인계는 담기·비움·복귀 확인 후 정책 중지와 실제 정지를 확인해야 합니다")
             if cmd["kind"] in {"PICK", "HANDOFF"}:
-                confirmed = data.get("confirmed_items", [])
-                require(isinstance(confirmed, list), "확인 상품 형식 오류", 422)
-                require(all(isinstance(i, dict) and isinstance(i.get("sku"), str)
-                            and type(i.get("slot")) is int and set(i) == {"sku", "slot"}
-                            for i in confirmed), "확인 상품 형식 오류", 422)
-                canonical = [(i["sku"], i["slot"]) for i in confirmed]
-                expected = {(i["sku"], i["slot"]) for i in cmd["items"]}
-                require(len(canonical) == len(confirmed) and len(set(canonical)) == len(canonical)
-                        and all(type(i.get("slot")) is int for i in confirmed)
-                        and set(canonical).issubset(expected), "확인 상품·슬롯이 명령과 다릅니다")
-                if cmd["kind"] == "HANDOFF":
-                    require(data.get("basket_id") == cmd["basket_id"], "다른 고객 장바구니의 인계 결과입니다")
-                require(kind != "SUCCEEDED" or set(canonical) == expected, "일부 상품만 확인된 결과는 전체 성공이 아닙니다")
-                for sku, slot in canonical:
-                    if cmd["kind"] == "PICK":
-                        require(not any(i["slot"] == slot for i in session["inventory"]), "이미 적재된 슬롯")
-                        session["inventory"].append({"sku": sku, "slot": slot, "delivered": False,
-                                                     "load_command_id": cmd["id"], "handoff_command_id": None})
-                    else:
-                        item = next((i for i in session["inventory"] if i["slot"] == slot and i["sku"] == sku), None)
-                        require(item and not item["delivered"], "인계할 상품을 확인할 수 없습니다")
-                        item["delivered"], item["handoff_command_id"] = True, cmd["id"]
-                    self._log("item_confirmed", {"sku": sku, "slot": slot,
-                                                "direction": "LOAD" if cmd["kind"] == "PICK" else "HANDOFF"}, command=cmd)
+                self._confirm_items(cmd, data, complete=kind == "SUCCEEDED")
             if cmd["kind"] == "STOP" and kind == "SUCCEEDED":
                 require(data.get("stopped") is True, "장비 중단 결과에는 정지 확인이 필요합니다")
+            if cmd["kind"] == "STOP_POLICY" and kind == "SUCCEEDED":
+                require(all(data.get(k) is True for k in ("policy_stopped", "motion_stopped", "hold_confirmed", "torque_enabled")),
+                        "정책 출력 중지·실제 정지·토크 유지 확인이 필요합니다")
             cmd["status"], cmd["result"] = kind, result
             if kind == "FAILED":
                 if cmd["kind"] != "STOP":
                     self._fault(task, str(data.get("reason", "장비 작업 실패"))[:200])
             elif cmd["kind"] == "NAVIGATE":
                 task["state"] = "WAIT_STOP"
-            elif cmd["kind"] in {"PICK", "HANDOFF"}:
+            elif cmd["kind"] == "PICK":
                 task["state"] = "WAIT_ARM_CLEAR"
-                if cmd["kind"] == "HANDOFF":
-                    require(session["inventory"] and all(i["delivered"] for i in session["inventory"]), "미인계 상품 존재")
-                    requested = sum(sum(o["items"].values()) for o in self.state["orders"].values()
-                                    if o["session_id"] == session["id"])
-                    require(len(session["inventory"]) == requested, "접수된 주문에 미적재 상품이 남아 있습니다")
-                    session["state"], session["completed_at"] = "COMPLETED", self.clock()
-                    self._log("shopping_completed", {"customer_mobile_receipt": "not_implemented_optional_SR29"}, task=task)
+            elif cmd["kind"] == "STOP_POLICY":
+                handoff = next(c for c in self.state["commands"].values()
+                               if c["task_id"] == task["id"] and c["kind"] == "HANDOFF")
+                require(handoff["status"] == "TRANSFERRED", "상품 인계 근거가 먼저 필요합니다")
+                handoff.update(status="SUCCEEDED", result={"kind": "SUCCEEDED", "data": handoff["transfer"]})
+                task["state"] = "WAIT_ARM_CLEAR"
+                task["policy_stopped_at"] = self.clock()
+                self._complete_shopping(session, task)
             elif cmd["kind"] == "LEAVE":
                 task["state"] = "WAIT_EXIT"
+        elif kind == "TRANSFER_READY":
+            require(cmd["kind"] == "HANDOFF" and cmd["status"] == "ACCEPTED", "실행 중인 인계 작업이 아닙니다")
+            require(cmd["sent_at"] is not None and self.clock() - cmd["sent_at"] <= cmd["timeout_seconds"], "인계 시간 초과")
+            require(all(data.get(k) is True for k in ("cart_visible", "cart_empty", "last_item_placed", "standby_reached")),
+                    "카트 비움만으로 완료할 수 없습니다. 마지막 담기·복귀·가림 없음 확인이 필요합니다")
+            self._confirm_items(cmd, data, complete=True)
+            cmd.update(status="TRANSFERRED", transfer=deepcopy(data))
+            task["state"] = "WAIT_POLICY_STOP"
+            self._command(task, "STOP_POLICY", task["device_id"])
         elif kind == "STOPPED":
             require(cmd["kind"] == "NAVIGATE" and cmd["status"] == "SUCCEEDED"
                     and task["state"] in {"WAIT_STOP", "WAIT_BASKET"}, "현재 이동 결과 이후에 정차를 확인해야 합니다")
@@ -421,13 +534,51 @@ class Engine:
             zone["owner"], task["state"], session["current_task"] = None, "DONE", None
             if task["kind"] == "HANDOFF":
                 self.state["basket"] = None
-                self.state["robots"][task["robot_id"]]["session_id"] = None
+                self.state["trips"][task["trip_id"]]["state"] = "DONE"
+                session["active_trip"] = None
+                if session["state"] == "COMPLETED":
+                    self.state["robots"][task["robot_id"]]["session_id"] = None
+                else:
+                    session["state"] = "CHECKOUT_REQUESTED"
             self._log("zone_released", {"zone_id": task["zone_id"]}, task=task)
         else:
             raise DomainError("지원하지 않는 결과 종류", 422)
         self.state["results"][key] = fingerprint
         self._log("device_event", {"kind": kind, "data": data, "event_id": key}, command=cmd)
         return {"duplicate": False}
+
+    def _confirm_items(self, cmd, data, *, complete):
+        confirmed = data.get("confirmed_items", [])
+        require(isinstance(confirmed, list) and all(isinstance(i, dict) and set(i) == {"sku", "slot", "item_id"}
+                and isinstance(i["sku"], str) and isinstance(i["item_id"], str) and type(i["slot"]) is int
+                for i in confirmed), "확인 상품 형식 오류", 422)
+        canonical = {(i["sku"], i["slot"], i["item_id"]) for i in confirmed}
+        expected = {(i["sku"], i["slot"], i["item_id"]) for i in cmd["items"]}
+        require(len(canonical) == len(confirmed) and canonical.issubset(expected), "상품·적재 위치·이동 식별값이 명령과 다릅니다")
+        require(not complete or canonical == expected, "일부 상품만 확인된 결과는 전체 성공이 아닙니다")
+        if cmd["kind"] == "HANDOFF":
+            require(data.get("basket_id") == cmd["basket_id"], "다른 고객 장바구니의 인계 결과입니다")
+        session = self._session(cmd["session_id"])
+        for sku, slot, item_id in sorted(canonical, key=lambda i: i[1]):
+            unit = self.state["units"][item_id]
+            require(unit["trip_id"] == cmd["trip_id"] and unit["slot"] == slot, "이전 운반 차수의 결과입니다")
+            if cmd["kind"] == "PICK":
+                require(unit["state"] == "PLANNED", "이미 처리한 상품입니다")
+                require(not any(i["slot"] == slot and not i["delivered"] for i in session["inventory"]), "이미 적재된 위치")
+                stock = self.state["stock"][sku]
+                require(stock["reserved"] > 0 and stock["on_hand"] > 0, "예약 재고 불일치")
+                stock["on_hand"] -= 1
+                stock["reserved"] -= 1
+                unit["state"] = "LOADED"
+                session["inventory"].append({"sku": sku, "slot": slot, "item_id": item_id, "trip_id": cmd["trip_id"],
+                    "delivered": False, "load_command_id": cmd["id"], "handoff_command_id": None})
+            else:
+                require(unit["state"] == "LOADED", "인계할 상품을 확인할 수 없습니다")
+                item = next(i for i in session["inventory"] if i["item_id"] == item_id)
+                item.update(delivered=True, handoff_command_id=cmd["id"])
+                unit["state"] = "DELIVERED"
+            self._log("item_confirmed", {"sku": sku, "slot": slot, "item_id": item_id, "trip_id": cmd["trip_id"],
+                "direction": "LOAD" if cmd["kind"] == "PICK" else "HANDOFF"}, command=cmd)
 
     @atomic
     def basket_ready(self, sid, task_id, basket_id):
@@ -449,11 +600,12 @@ class Engine:
                 if session["current_task"]:
                     self._fault(self.state["tasks"][session["current_task"]], "연결 프로그램 통신 시간 초과")
         for cmd in list(self.state["commands"].values()):
-            if cmd["kind"] != "STOP" and cmd["status"] in {"SENT", "ACCEPTED"} and self.clock() - cmd["sent_at"] > self.command_timeout:
+            if cmd["kind"] != "STOP" and cmd["status"] in {"SENT", "ACCEPTED"} and self.clock() - cmd["sent_at"] > cmd.get("timeout_seconds", self.command_timeout):
                 self._fault(self.state["tasks"][cmd["task_id"]], "명령 결과 시간 초과: 성공 여부 불명")
 
     @atomic
     def mock_steps(self, count):
+        require(self.mode == "mock", "실물 모드에서는 모의 실행을 할 수 없습니다")
         require(type(count) is int and 1 <= count <= 100, "허용 단계는 1~100입니다", 422)
         self.state["permits"] = min(100, self.state["permits"] + count)
         return {"remaining": self.state["permits"]}
@@ -467,6 +619,7 @@ class Engine:
 
     @atomic
     def inject_failure(self, device_id, kind):
+        require(self.mode == "mock", "실물 모드에서는 모의 오류를 주입할 수 없습니다")
         require(device_id in self.state["devices"], "장비 ID를 확인하세요", 422)
         if kind == "PICK_FAIL":
             require(device_id in STATIONS.values(), "로봇팔을 선택하세요", 422)
@@ -491,7 +644,11 @@ class Engine:
         return False
 
     @atomic
-    def reset_mock(self):
+    def reset_mock(self, acknowledge_unresolved=False):
+        require(self.mode == "mock", "실물 모드 재고·작업은 모의 초기화할 수 없습니다")
+        unresolved = any(t["state"] not in {"DONE", "CANCELLED"} for t in self.state["tasks"].values())
+        require(not unresolved or acknowledge_unresolved is True,
+                "진행·불명 작업이 있습니다. 가상 실행 폐기 확인 후 새 모의 시나리오를 시작하세요")
         self.store.archive(self.state)
         self.state = self._fresh()
         self._log("mock_run_created", {"previous_run": "archived; real hardware not supported"})
@@ -503,12 +660,20 @@ class Engine:
             out.pop("results")
             for session in out["sessions"].values():
                 session.pop("token_hash")
-            out["products"], out["capacity"] = deepcopy(PRODUCTS), self.capacity
+            out["products"], out["capacity"] = deepcopy(list(self.products.values())), self.capacity
+            out["cart_capacity"] = self.cart_capacity
+            for product in out["products"]:
+                stock = self.state["stock"].get(product["sku"])
+                product.update(stock=deepcopy(stock), available=stock["on_hand"] - stock["reserved"] if stock else None)
+            for order in out["orders"].values():
+                tids = {t["id"] for t in self.state["tasks"].values() if t.get("order_id") == order["id"]}
+                order["cancellable"] = order.get("status") == "ACTIVE" and not self._session(order["session_id"])["error"] and not any(
+                    c["task_id"] in tids and c["sent_at"] is not None for c in self.state["commands"].values())
             out["server_time"] = self.clock()
             if sid is not None:
                 self._session(sid)
                 out["sessions"] = {sid: out["sessions"][sid]}
-                for field in ["orders", "tasks", "commands"]:
+                for field in ["orders", "tasks", "commands", "units", "trips"]:
                     out[field] = {k: v for k, v in out[field].items() if v["session_id"] == sid}
                 out["zones"] = {name: {"busy": bool(zone["owner"]),
                                       "mine": zone["owner"] in out["tasks"],
@@ -528,8 +693,14 @@ class Engine:
             assert len(zone["queue"]) == len(set(zone["queue"]))
             assert zone["owner"] not in zone["queue"]
         for session in self.state["sessions"].values():
-            slots = [item["slot"] for item in session["inventory"]]
+            slots = [item["slot"] for item in session["inventory"] if not item["delivered"]]
             assert len(slots) == len(set(slots))
+            if not self.state["catalog_reconciliation_required"]:
+                assert len(slots) <= self.cart_capacity
             if session["state"] == "COMPLETED":
-                assert session["checkout_requested"] and session["inventory"]
+                assert session["checkout_requested"]
                 assert all(item["delivered"] for item in session["inventory"])
+        for sku, stock in self.state["stock"].items():
+            assert 0 <= stock["reserved"] <= stock["on_hand"]
+            assert stock["reserved"] == sum(u["sku"] == sku and u["state"] in {"RESERVED", "PLANNED"}
+                                            for u in self.state["units"].values())

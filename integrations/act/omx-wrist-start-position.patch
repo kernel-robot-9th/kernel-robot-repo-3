@@ -1,0 +1,15 @@
+diff --git a/src/lerobot/robots/omx_follower/omx_follower.py b/src/lerobot/robots/omx_follower/omx_follower.py
+index e0b612c6..18af77e7 100644
+--- a/src/lerobot/robots/omx_follower/omx_follower.py
++++ b/src/lerobot/robots/omx_follower/omx_follower.py
+@@ -158,6 +158,10 @@ class OmxFollower(Robot):
+             self.bus.write("Position_I_Gain", "elbow_flex", 0)
+             self.bus.write("Position_D_Gain", "elbow_flex", 600)
+ 
++            # Hold the current wrist angle when torque is enabled, instead of a stale goal.
++            wrist_position = self.bus.read("Present_Position", "wrist_roll", normalize=False)
++            self.bus.write("Goal_Position", "wrist_roll", wrist_position, normalize=False)
++
+     def setup_motors(self) -> None:
+         for motor in reversed(self.bus.motors):
+             input(f"Connect the controller board to the '{motor}' motor only and press enter.")

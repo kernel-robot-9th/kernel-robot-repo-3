@@ -1,5 +1,5 @@
 {
   "gateway-a": {"label": "중개 A · 적재 A / Pinky", "devices": ["omx-a", "pinky-1", "pinky-2"], "capabilities": ["loading", "mobile"]},
-  "gateway-b": {"label": "중개 B · 적재 B / 전경 관측", "devices": ["omx-b"], "capabilities": ["loading", "overview-observation"]},
+  "gateway-b": {"label": "중개 B · 적재 B", "devices": ["omx-b"], "capabilities": ["loading"]},
   "gateway-c": {"label": "중개 C · 모방학습 인도", "devices": ["omx-handoff"], "capabilities": ["handoff"]}
 }

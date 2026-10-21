@@ -1,0 +1,7 @@
+{
+  "overview": {"label": "전체 맵", "owner": "central", "transport": "mock"},
+  "load-a": {"label": "상차 A", "owner": "gateway-a", "transport": "mock"},
+  "load-b": {"label": "상차 B", "owner": "gateway-b", "transport": "mock"},
+  "handoff-front": {"label": "인계 · 정면", "owner": "gateway-c", "transport": "mock"},
+  "handoff-wrist": {"label": "인계 · 그리퍼", "owner": "gateway-c", "transport": "mock"}
+}

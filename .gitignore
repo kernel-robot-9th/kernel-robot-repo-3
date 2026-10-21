@@ -245,3 +245,6 @@ confluence-*.jpg
 # ACT weights are distributed as versioned GitHub Release assets.
 /models/
 *.safetensors
+*.pt
+integrations/omx_yolo/config/
+integrations/omx_yolo/records/

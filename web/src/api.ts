@@ -47,6 +47,7 @@ export function usePolling(load: () => Promise<void>) {
 }
 
 export const labels: Record<string, string> = {
+  WAIT_POLICY_STOP: '정책 중지·실제 정지 확인 대기', STOP_POLICY: '정책 출력 중지·자세 유지', TRANSFERRED: '상품 인계 확인 · 정지 대기',
   SHOPPING: '쇼핑 중', CHECKOUT_REQUESTED: '주문 마감 · 적재 처리 중', DELIVERING: '고객 인계 준비',
   COMPLETED: '쇼핑 완료', ERROR: '작업 중단', RECOVERY_REQUIRED: '복구 확인 필요',
   QUEUED: '작업 대기', WAIT_ZONE: '구역 사용 대기', MOVING: '적재·인계 지점 이동',

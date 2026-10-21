@@ -21,11 +21,11 @@ def test_api_auth_customer_isolation_and_request_validation(rig):
         assert set(mine["sessions"]) == {a["session_id"]}
         assert b["session_id"] not in str(mine)
         assert client.post("/api/customer/orders", headers=bearer(a["token"]), json={
-            "request_id": "test-order-001", "items": [{"sku": "DEMO-APPLE", "quantity": True}]}).status_code == 422
+            "request_id": "test-order-001", "items": [{"sku": "SKU-JIN-RAMEN", "quantity": True}]}).status_code == 422
         assert client.post("/api/customer/orders", headers=bearer(a["token"]), json={
             "request_id": "test-order-001", "session_id": b["session_id"],
-            "items": [{"sku": "DEMO-APPLE", "quantity": 1}]}).status_code == 422
-        body = {"request_id": "test-order-001", "items": [{"sku": "DEMO-APPLE", "quantity": 1}]}
+            "items": [{"sku": "SKU-JIN-RAMEN", "quantity": 1}]}).status_code == 422
+        body = {"request_id": "test-order-001", "items": [{"sku": "SKU-JIN-RAMEN", "quantity": 1}]}
         one = client.post("/api/customer/orders", headers=bearer(a["token"]), json=body)
         two = client.post("/api/customer/orders", headers=bearer(a["token"]), json=body)
         assert one.status_code == two.status_code == 201

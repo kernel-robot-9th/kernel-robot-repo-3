@@ -12,7 +12,7 @@ from conftest import command, order, Harness, Clock
 def start_order(rig, quantity=1):
     e, h, clock = rig
     sid = e.create_session("고객 A")["session_id"]
-    order(e, sid, quantity=quantity)
+    e.submit_order(sid, [{"sku": sku, "quantity": 1} for sku in ["SKU-JIN-RAMEN", "SKU-SHIN-RAMEN"][:quantity]], "order-request-001")
     return e, h, clock, sid
 
 
@@ -33,7 +33,7 @@ def test_shared_zone_fifo_exclusive_until_exit_observation(rig):
     e, h, _ = rig
     a, b = [e.create_session(name)["session_id"] for name in ["A", "B"]]
     order(e, a)
-    order(e, b)
+    order(e, b, sku="SKU-SHIN-RAMEN")
     first = e.snapshot()["zones"]["load-a"]["owner"]
     assert len(e.snapshot()["zones"]["load-a"]["queue"]) == 1
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -244,9 +244,9 @@ def test_gateway_restart_blocks_active_work(rig):
 def test_full_two_customer_flow_and_robot_release(rig):
     e, h, _ = rig
     a, b = [e.create_session(name)["session_id"] for name in ["A", "B"]]
-    order(e, a, quantity=2)
-    order(e, b, request_id="B-order-001")
-    order(e, b, sku="DEMO-SNACK", request_id="B-order-002")
+    e.submit_order(a, [{"sku": "SKU-JIN-RAMEN", "quantity": 1}, {"sku": "SKU-SHIN-RAMEN", "quantity": 1}], "A-order-001")
+    order(e, b, sku="SKU-SEOUL-MILK", request_id="B-order-001")
+    order(e, b, sku="SKU-RICE-CHIP", request_id="B-order-002")
     e.checkout(a)
     e.checkout(b)
     observed_wait = False

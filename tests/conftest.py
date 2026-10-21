@@ -53,7 +53,7 @@ def rig():
     engine.store.close()
 
 
-def order(engine, sid, sku="DEMO-APPLE", quantity=1, request_id="order-request-001"):
+def order(engine, sid, sku="SKU-JIN-RAMEN", quantity=1, request_id="order-request-001"):
     return engine.submit_order(sid, [{"sku": sku, "quantity": quantity}], request_id)
 
 

@@ -58,11 +58,11 @@ def scenario():
                                              "--state", str(Path(tmp) / "world.json")],
                                             cwd=ROOT, env=env, stdout=gateway_log, stderr=subprocess.STDOUT)
                 people = []
-                for name in ["고객 A", "고객 B"]:
+                for index, name in enumerate(["고객 A", "고객 B"]):
                     person = public.call("/api/sessions", {"label": name})
                     customer = Client(base, person["token"])
                     customer.call("/api/customer/orders", {"request_id": secrets.token_hex(12), "items": [
-                        {"sku": "DEMO-APPLE", "quantity": 1}, {"sku": "DEMO-SNACK", "quantity": 1}]})
+                        {"sku": ["SKU-JIN-RAMEN", "SKU-SHIN-RAMEN"][index], "quantity": 1}, {"sku": "SKU-RICE-CHIP", "quantity": 1}]})
                     customer.call("/api/customer/checkout", {})
                     people.append(person)
                 assert people[0]["robot_id"] != people[1]["robot_id"]
