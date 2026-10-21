@@ -6,6 +6,20 @@
 
 설계·요구사항·회의 자료는 [Confluence 요구사항](https://sage0316.atlassian.net/wiki/spaces/MoEAt1HxbH7o/pages/426000/System+Requirements), [시스템 구성](https://sage0316.atlassian.net/wiki/spaces/MoEAt1HxbH7o/pages/164060/System+Architecture), Jira에서 관리한다. 이 파일은 코드와 함께 전달할 실행 안내다.
 
+## ACT 모델 준비
+
+모델은 이 저장소의 **GitHub Releases**에서 별도로 받는다. 파일 목록·버전·SHA-256은 `config/model_assets.json`에서 관리한다. 왼쪽 v2 5만 모델을 등록했으며 오른쪽은 선정 전이다.
+
+```bash
+python3 scripts/prepare_models.py list
+python3 scripts/prepare_models.py download --model act-left-v2-050000 --root ~/omx_models
+python3 scripts/prepare_models.py verify --model act-left-v2-050000 --root ~/omx_models
+```
+
+[모델 배포·오프라인 설치·새 모델 등록 안내](MODEL_ASSETS.md). 이 명령은 모델 파일 준비만 수행하며 로봇을 시작하거나 기존 MOCK 실행에 실제 ACT 동작을 연결하지 않는다.
+
+최신 장비 목표는 **관제 1대 + 중계 3대**다. 아래 3대 구성은 중앙과 중계 A를 같은 PC에 두었던 기존 모의 설치 안내이며 4대 현장 구성 안내는 별도 갱신이 필요하다.
+
 ## 1. 노트북 역할과 준비물
 
 | 구분 | A | B | C |
@@ -47,7 +61,7 @@ sudo apt install git python3-venv python3-pip curl
 
 아래 두 경로 중 자신의 상태에 맞는 **하나만** 실행한다. 이후 명령은 모두 저장소 폴더에서 실행한다.
 
-공유 저장소는 **https://github.com/rheffi/cartrina-control · Private · main**이다. 비공개 저장소이므로 각 노트북에서 접근 권한이 있는 GitHub 계정 인증이 필요하다. GitHub 비밀번호 대신 GitHub가 지원하는 HTTPS 자격 증명 또는 SSH 인증을 사용한다. 토큰을 clone URL에 넣지 않는다.
+공유 저장소는 **https://github.com/rheffi/cartrina-control · Public · main**이다. 공개 코드·Release 다운로드는 GitHub 로그인이 필요 없다. 쓰기 작업이나 비공개 접근이 필요할 때는 GitHub가 지원하는 HTTPS 자격 증명 또는 SSH 인증을 사용한다. 토큰을 clone URL에 넣지 않는다.
 
 **처음 받는 노트북:**
 

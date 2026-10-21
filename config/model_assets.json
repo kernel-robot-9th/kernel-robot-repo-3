@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "repository": "rheffi/cartrina-control",
+  "models": {
+    "act-left-v2-050000": {
+      "selection_status": "selected",
+      "direction": "left",
+      "policy": {
+        "type": "act",
+        "chunk_size": 100,
+        "n_action_steps": 100,
+        "camera_shapes": {
+          "front": [
+            3,
+            480,
+            640
+          ],
+          "wrist": [
+            3,
+            480,
+            640
+          ]
+        }
+      },
+      "checkpoint_steps": 50000,
+      "install_subdir": "omx_left_act_v2/050000/pretrained_model",
+      "release": {
+        "tag": "models-act-left-v2-s050000-v1",
+        "asset": "act-left-v2-050000.zip",
+        "size": 206726746,
+        "sha256": "79f382a9bd373c710767642928306f9722fcc33eac48ed16ada4130c22292fb0"
+      },
+      "files": [
+        {
+          "name": "config.json",
+          "size": 1769,
+          "sha256": "e4e1df800e99130a82c6b2f2220a736131e7210c4cb2786ebced6db40a62c3ee"
+        },
+        {
+          "name": "model.safetensors",
+          "size": 206699736,
+          "sha256": "b62259fd5c1871f53779fec98ec18e700d69e4c0cd6065697a1326284df8e8c5"
+        },
+        {
+          "name": "train_config.json",
+          "size": 6833,
+          "sha256": "e346d36ebe02b875681f4d9ce876e2745ecaf89e3c599c03e4aabcc1c5ac2324"
+        },
+        {
+          "name": "policy_preprocessor.json",
+          "size": 1391,
+          "sha256": "8ed1c0c577f4aab02dd1252752dff885f9e50702c4cf129406c042d91303bbf9"
+        },
+        {
+          "name": "policy_postprocessor.json",
+          "size": 691,
+          "sha256": "e359584c9f74e9c6ffe6f801512642d97bb15610a7879e245bda5269b7d6dcc1"
+        },
+        {
+          "name": "policy_preprocessor_step_3_normalizer_processor.safetensors",
+          "size": 7552,
+          "sha256": "5648593fe2716a301052f51112ff49211744131d95dfcc0facbfc9bf8959e11b"
+        },
+        {
+          "name": "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+          "size": 7552,
+          "sha256": "5648593fe2716a301052f51112ff49211744131d95dfcc0facbfc9bf8959e11b"
+        }
+      ],
+      "provenance": {
+        "dataset": "chun-hwan/omx-unload-left-v2",
+        "lerobot_commit": "8fff0fde7c79f23a93d845d1a50e985de01f8b8a",
+        "handoff_commit": "5c82362cfef773a86a9582843c29fab583cf5cdb",
+        "note": "사용자 선택 모델. 정량 실물 성공률과 관제 시작/중지 연동은 미검증"
+      }
+    },
+    "act-right-v2": {
+      "selection_status": "pending",
+      "direction": "right",
+      "reason": "오른쪽은 비교 시험 후 체크포인트 선정 예정. 다운로드·실행 대상으로 등록하지 않음"
+    }
+  }
+}

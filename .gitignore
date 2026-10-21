@@ -241,3 +241,7 @@ reports/
 pytest-cache-files-*/
 confluence-*.png
 confluence-*.jpg
+
+# ACT weights are distributed as versioned GitHub Release assets.
+/models/
+*.safetensors
