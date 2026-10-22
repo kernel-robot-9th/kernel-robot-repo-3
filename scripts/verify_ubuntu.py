@@ -16,9 +16,11 @@ def source_digest():
     paths = []
     for folder in ["server", "robot_gateway", "tests", "scripts", "web/src", "config"]:
         paths.extend(p for p in (ROOT / folder).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
-    paths.extend(p for p in (ROOT / 'integrations').rglob('*') if p.is_file()
-                 and p.suffix in {'.py', '.json', '.patch', '.txt'} and '__pycache__' not in p.parts
-                 and not {'config', 'records'}.intersection(p.relative_to(ROOT / 'integrations').parts))
+    for folder in ['integrations', 'robots']:
+        paths.extend(p for p in (ROOT / folder).rglob('*') if p.is_file()
+                     and p.suffix in {'.py', '.json', '.patch', '.txt'}
+                     and not {'__pycache__', '.venv-pick', 'records', 'models', 'datasets', 'outputs'}.intersection(p.parts)
+                     and ('config' not in p.relative_to(ROOT / folder).parts or p.name.endswith('.example.json')))
     paths.extend(ROOT / p for p in ["pyproject.toml", "web/package.json", "web/vite.config.ts", "web/tsconfig.json"])
     for path in sorted(paths):
         value.update(str(path.relative_to(ROOT)).replace("\\", "/").encode())

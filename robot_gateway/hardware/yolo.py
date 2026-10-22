@@ -6,7 +6,7 @@ import threading
 import time
 from robot_gateway.frames import SharedCamera
 
-ROOT = Path(__file__).resolve().parents[2] / 'integrations' / 'omx_yolo'
+ROOT = Path(__file__).resolve().parents[2] / 'robots' / 'omx_yolo'
 
 
 class YoloArm:
@@ -20,7 +20,7 @@ class YoloArm:
             self.confirmed = []
             sys.path.insert(0, str(ROOT / 'tools' / 'picking'))
             from pick_core import build_plan, choose, execute, get_rule, load_config
-            from omx_pick import calibration_for, solver_for, legacy, require_job_arm
+            from omx_pick import calibration_for, solver_for, reference_for, legacy, require_job_arm
             from omx_arm_config import ArmProfile
             from pick_robot import DynamixelBus, MotionController
             from pick_vision import Camera, Detector
@@ -29,6 +29,9 @@ class YoloArm:
                 cfg['width'], cfg['height'], cfg['fps'], Path('unused'), Path(cfg['calibration_file']), Path(cfg['poses_file']))
             job = load_config(Path(cfg['pick_config']))
             require_job_arm(job, profile)
+            # Validate taught grasp directions before opening the camera or motors.
+            references = {item['sku']: reference_for(job, self.products[item['sku']]['detector_class'], profile)
+                          for item in command['items']}
             detector = Detector(job, str(ROOT / 'weights' / 'best.pt'))
             if [detector.model.names[i] for i in sorted(detector.model.names)] != [p['detector_class'] for p in self.products.values()]:
                 raise RuntimeError('YOLO 모델과 상품 기준 라벨이 다릅니다')
@@ -42,7 +45,11 @@ class YoloArm:
             class CancellableMotion(MotionController):
                 def ramp(inner, targets, seconds=None):
                     import math
+                    from omx_wrist import nearest_wrist
                     start = {i: bus.read(i, 132, 4) for i in targets}
+                    targets = dict(targets)
+                    if 15 in targets:
+                        targets[15] = nearest_wrist(targets[15], start[15])
                     duration = job['stage_seconds'] if seconds is None else seconds
                     steps = max(1, math.ceil(duration / .05))
                     for step in range(1, steps + 1):
@@ -85,7 +92,8 @@ class YoloArm:
                     names = cfg['drop_slots'][command['robot_id']][str(item['slot'])]
                     saved = {key: recorder.load_pose(name, profile)['raw_pulses'] for key, name in {
                         'hover_high': 'hover_high', 'drop_approach': names['approach'], 'drop_release': names['release']}.items()}
-                    plan = build_plan(job, calibration, target, saved, solver_for())
+                    plan = build_plan(job, calibration, target, saved,
+                                      solver_for(references[item['sku']], saved['hover_high']))
                     execute(plan, driver)
                     if command.get('scope') == 'device_test':
                         # A completed trajectory is not proof that an item was loaded.

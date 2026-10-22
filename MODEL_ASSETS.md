@@ -1,6 +1,18 @@
-# ACT 모델 배포·준비
+# YOLO·ACT 모델 배포·준비
 
-실행 코드와 모델 버전 목록은 이 저장소에서, 대용량 모델은 같은 저장소의 GitHub Releases에서 배포한다. 일반 Git에 ACT 가중치·녹화 데이터·학습 재개 상태를 커밋하지 않는다.
+실행 코드와 모델 버전 목록은 이 저장소에서, 가중치는 [팀 저장소 Releases](https://github.com/kernel-robot-9th/kernel-robot-repo-3/releases)에서 배포한다. 일반 Git에 가중치·녹화 데이터·학습 재개 상태를 커밋하지 않는다. 개인 실험 저장소를 추가로 clone할 필요가 없다.
+
+## YOLO 준비
+
+`models-yolo-shopping-v1` Release의 `yolo-shopping-best.pt`를 크기·SHA-256으로 검증하고 `robots/omx_yolo/weights/best.pt`에 설치한다. 출처·해시·10개 라벨 기준은 `integrations/sources.json`, `robots/omx_yolo/weights/classes.txt`다.
+
+```bash
+python3 scripts/prepare_yolo_model.py
+# 인터넷이 없는 현장: Release에서 받은 파일을 USB로 옮긴 뒤
+python3 scripts/prepare_yolo_model.py --archive /media/USB/yolo-shopping-best.pt
+```
+
+이미 정상 파일이 있으면 검증만 한다. 기존 파일이 다른 모델이면 덮어쓰지 않는다. YOLO도 새 모델을 선정하면 새 태그와 해시를 등록하고 테스트한다.
 
 ## 현재 등록
 

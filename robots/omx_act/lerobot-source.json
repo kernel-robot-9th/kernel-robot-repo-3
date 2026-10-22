@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/huggingface/lerobot.git",
+  "commit": "8fff0fde7c79f23a93d845d1a50e985de01f8b8a",
+  "package_version": "0.4.4",
+  "local_patch": "patches/omx-wrist-start-position.patch",
+  "recording_python": "3.10",
+  "recording_torch": "2.10.0+cu128",
+  "dataset_repo_id": "chun-hwan/omx-unload-left-v1",
+  "local_episodes_at_export": 66,
+  "local_frames_at_export": 37012
+}

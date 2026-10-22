@@ -246,5 +246,10 @@ confluence-*.jpg
 /models/
 *.safetensors
 *.pt
-integrations/omx_yolo/config/
-integrations/omx_yolo/records/
+robots/omx_yolo/config/*
+!robots/omx_yolo/config/omx_pick.example.json
+robots/omx_yolo/records/
+robots/omx_yolo/.venv-pick/
+robots/omx_act/outputs/
+robots/omx_act/models/
+robots/omx_act/datasets/

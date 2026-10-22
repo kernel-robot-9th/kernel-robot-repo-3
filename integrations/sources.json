@@ -1,7 +1,13 @@
 {
   "yolo": {
     "repository": "https://github.com/rheffi/omxtest",
-    "commit": "667a5aff45791351a2f00d19e9bbe3a4709d1db3",
+    "commit": "a187404d27fc5079d7f3fbc4f4ed1f47baf2da43",
+    "path": "robots/omx_yolo",
+    "release": {
+      "repository": "kernel-robot-9th/kernel-robot-repo-3",
+      "tag": "models-yolo-shopping-v1",
+      "asset": "yolo-shopping-best.pt"
+    },
     "model_sha256": "80f82a3b8b8db7e1b4f91ad349fc49858df45735962bde1df6b6ec4754829b5b",
     "model_size": 5516881
   },
@@ -9,6 +15,9 @@
     "repository": "https://github.com/huggingface/lerobot",
     "commit": "8fff0fde7c79f23a93d845d1a50e985de01f8b8a",
     "package_version": "0.4.4",
-    "patch": "integrations/act/omx-wrist-start-position.patch"
+    "patch": "robots/omx_act/patches/omx-wrist-start-position.patch",
+    "runtime": "robots/omx_act/runtime.py",
+    "reference_repository": "https://github.com/rheffi/omx-imitation-project",
+    "reference_commit": "02aebddbb4fed6d2295f8856ba1e08b9856242a0"
   }
 }

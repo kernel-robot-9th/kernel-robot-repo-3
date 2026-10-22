@@ -27,7 +27,7 @@ def packaged(tmp_path):
     archive, record = assets.package_model(source, tmp_path / "release", "act-left-v2-050000",
                                            "left", 50000, "models-left-v1")
     entry = json.loads(record.read_text())["act-left-v2-050000"]
-    manifest = {"schema_version": 1, "repository": "rheffi/cartrina-control", "models": {
+    manifest = {"schema_version": 1, "repository": "kernel-robot-9th/kernel-robot-repo-3", "models": {
         "act-left-v2-050000": entry,
         "act-right-v2": {"selection_status": "pending", "direction": "right"}}}
     return source, archive, entry, manifest
@@ -128,7 +128,7 @@ def test_download_uses_release_identity_and_checked_cache(packaged, tmp_path, mo
     monkeypatch.setattr(assets, "request", request)
     cached = assets.download_archive(manifest, entry, tmp_path / "cache")
     assert cached.read_bytes() == archive.read_bytes()
-    assert calls[-1][0] == "https://api.github.com/repos/rheffi/cartrina-control/releases/assets/123"
+    assert calls[-1][0] == "https://api.github.com/repos/kernel-robot-9th/kernel-robot-repo-3/releases/assets/123"
     assert calls[-1][1] == "application/octet-stream"
     assert assets.download_archive(manifest, entry, tmp_path / "cache") == cached
     assert len(calls) == 2
@@ -152,7 +152,7 @@ def test_partial_network_download_is_not_left_as_a_valid_archive(packaged, tmp_p
 
 
 def test_redirect_strips_github_token_before_asset_host():
-    req = urllib.request.Request("https://api.github.com/repos/rheffi/cartrina-control/releases/assets/123",
+    req = urllib.request.Request("https://api.github.com/repos/kernel-robot-9th/kernel-robot-repo-3/releases/assets/123",
                                  headers={"Authorization": "Bearer do-not-leak"})
     redirected = assets.SafeRedirect().redirect_request(
         req, None, 302, "Found", {}, "https://release-assets.githubusercontent.com/file")

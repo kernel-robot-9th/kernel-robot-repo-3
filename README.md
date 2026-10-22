@@ -36,8 +36,8 @@
 # 처음 받는 PC. 이미 있다면 기존 폴더에서 상태 확인 후 git pull --ff-only
 mkdir -p ~/projects
 cd ~/projects
-git clone https://github.com/rheffi/cartrina-control.git
-cd cartrina-control
+git clone https://github.com/kernel-robot-9th/kernel-robot-repo-3.git
+cd kernel-robot-repo-3
 git status --short
 git rev-parse --short HEAD
 ```
@@ -69,13 +69,14 @@ python scripts/prepare_models.py verify --model act-left-v2-050000 --root ~/omx_
 
 다운로드는 로봇을 실행하지 않는다. 왼쪽 ACT는 v2 5만 스텝·n_action_steps 100·최대 180초다. 오른쪽은 선정 전이므로 준비되지 않은 방향 요청을 거부한다. 180초 경과나 프로세스 종료만으로 성공을 기록하지 않는다.
 
-실물 실행은 `robot_gateway/hardware/`가 담당한다. A/B는 YOLO 인식과 보정된 집기·놓기 궤적, C는 로컬 정면·그리퍼 프레임으로 ACT 추론을 수행한다. 같은 프레임을 별도 전송 스레드에 공유한다. YOLO를 동작 생성 정책으로 취급하지 않는다.
+실물 중계는 `robot_gateway/hardware/`, ACT 실행부는 `robots/omx_act/runtime.py`, YOLO 도구는 `robots/omx_yolo/`에 있다. A/B는 YOLO 인식과 보정된 집기·놓기 궤적, C는 로컬 정면·그리퍼 프레임으로 ACT 추론을 수행한다. 같은 프레임을 별도 전송 스레드에 공유한다. YOLO를 동작 생성 정책으로 취급하지 않는다.
 
 실제 Pinky 어댑터와 적재·담기·비움·팔 이탈 관측 생성부는 현장 코드로 연결해야 한다. 확인하지 않은 ROS 토픽·서비스·액션 이름을 가정하지 않았다. 팔 정지 피드백과 카메라/관절 기준도 현장에서 검증해야 한다. 전체 맵 카메라 기반 위치 추정·디지털 트윈 정합은 후속 작업이다.
 
-## 개발 검증 기록 — 2026-10-21
+## 개발 검증 기록 — 2026-10-22
 
-- Python 자동시험 118개 통과. 장비 테스트의 인증·중복 방지·주문 격리·중지·복구 검증을 포함한다. 최신 결과는 `scripts/verify_ubuntu.sh`로 확인한다.
+- Python 관제·모델 준비 자동시험 121개 통과. 장비 테스트의 인증·중복 방지·주문 격리·중지·복구 검증을 포함한다. 최신 결과는 `scripts/verify_ubuntu.sh`로 확인한다.
+- YOLO 오프라인 회귀시험 30개 통과. 가짜 모터로 손목 짧은 회전·복귀·관제 취소와 실제 계획 계산을 확인했다.
 - TypeScript 검사와 Vite 빌드 통과.
 - 중앙 + 중계 3개를 별도 프로세스로 띄운 HTTP 모의 시험: 두 고객 각각 4개(3+1) 인계, 집기 실패, 통신 끊김 통과.
 - 장비 테스트 HTTP 모의 통합 8개 항목 통과: 중계 3개 응답, 설정 검사, 적재 확인·해제, 하역 관측·정지, 중지 수신 구분, 실패, 연결 끊김, 주문 재고 보존.
@@ -85,3 +86,15 @@ python scripts/prepare_models.py verify --model act-left-v2-050000 --root ~/omx_
 관제의 **장비 테스트** 탭은 주문을 만들지 않고 중계 명령·응답을 확인한다. 일반 모의 중계에서도 사용할 수 있다. 실물은 [현장 안내 8번](FIELD_SETUP.md#8-장비-테스트-탭으로-omx-단독-연결)의 시험 전용 실행부를 사용한다. Pinky 없이 시작할 수 있지만 실제 바구니 고정과 OMX 설정은 필요하다. 운영자 확인은 자동 비전 판정과 구별해서 저장한다. `python scripts/demo_device_tests.py`는 중앙+중계 3개의 HTTP 모의 통합 시험을 수행한다.
 
 이 수치는 개발 PC의 코드·모의 검증 결과다. 현장에서는 사용한 코드·모델·배치와 실제 성공/실패 결과를 별도로 남긴다.
+
+## 팀 저장소 통합 이후
+
+최종 배포는 `kernel-robot-9th/kernel-robot-repo-3`의 `main`과 같은 저장소의 모델 Releases를 기준으로 한다. 기존 개인 `rheffi/cartrina-control`, `rheffi/omxtest`, `rheffi/omx-imitation-project`는 실험 이력을 보존하며 변경을 자동 반영하지 않는다. [폴더별 출처와 반영 절차](integrations/README.md)를 따른다.
+
+Pinky 실제 주행 코드는 아직 없으며 [연결 대기 항목](robots/pinky/README.md)을 확인한다. 개인 Isaac 프로젝트와 초기 기획·회의 문서는 이 저장소에 포함하지 않는다.
+
+YOLO 도구를 수정했다면 NumPy가 있는 개발 환경에서 저장소 루트 기준으로 다음 검사도 실행한다. 카메라·모터·모델 파일은 사용하지 않는다.
+
+```bash
+python -B -m unittest discover -s robots/omx_yolo/tests
+```

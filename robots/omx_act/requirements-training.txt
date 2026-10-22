@@ -1,0 +1,11 @@
+# Constraints from the recording PC; LeRobot itself comes from lerobot-source.json.
+# Install CUDA torch/torchvision first, then pip install -c this-file -e lerobot[dynamixel].
+torch==2.10.0
+torchvision==0.25.0
+torchcodec==0.10.0
+huggingface-hub==0.35.3
+datasets==4.8.5
+pyarrow==25.0.1
+opencv-python-headless==4.12.0.88
+numpy==2.2.6
+draccus==0.10.0

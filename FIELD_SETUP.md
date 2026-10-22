@@ -69,9 +69,9 @@ python -m robot_gateway.hardware.config --config runtime/hardware.json
 
 ## 3. 장비별 Python 환경
 
-중앙 FastAPI 환경과 ACT 환경을 억지로 합치지 않는다. A/B YOLO는 기존 Ubuntu 24.04·Python 3.12 환경을 우선 사용한다. 의존성 기록은 `integrations/omx_yolo/requirements-transfer.txt`에 있다. 기존 동작 환경이 있으면 전체 패키지를 무조건 재설치하지 않는다.
+중앙 FastAPI 환경과 ACT 환경을 억지로 합치지 않는다. A/B YOLO는 기존 Ubuntu 24.04·Python 3.12 환경을 우선 사용한다. 의존성 기록은 `robots/omx_yolo/requirements-transfer.txt`에 있다. 기존 동작 환경이 있으면 전체 패키지를 무조건 재설치하지 않는다.
 
-C는 검증에 사용한 Python 3.10 LeRobot 환경에서 **저장소 루트로 이동해** `python -m robot_gateway.hardware.worker ...`를 실행한다. 이 경로는 중앙 FastAPI 패키지 설치를 요구하지 않는다. LeRobot 소스는 `integrations/sources.json`의 Hugging Face 저장소·커밋을 사용하고 `integrations/act/omx-wrist-start-position.patch`를 적용한다. 기존에 패치했다면 중복 적용하지 않는다. 필요한 주요 패키지는 LeRobot·PyTorch·OpenCV이며 기존 CUDA 동작 환경을 유지한다. 최신 소스로 무조건 올리지 않는다.
+C는 검증에 사용한 Python 3.10 LeRobot 환경에서 **저장소 루트로 이동해** `python -m robot_gateway.hardware.worker ...`를 실행한다. 이 경로는 중앙 FastAPI 패키지 설치를 요구하지 않는다. LeRobot 소스는 `integrations/sources.json`의 Hugging Face 저장소·커밋을 사용하고 `robots/omx_act/patches/omx-wrist-start-position.patch`를 적용한다. 기존에 패치했다면 중복 적용하지 않는다. 필요한 주요 패키지는 LeRobot·PyTorch·OpenCV이며 기존 CUDA 동작 환경을 유지한다. 최신 소스로 무조건 올리지 않는다.
 
 ACT 추론은 로컬 `get_observation()`의 RGB 정면·그리퍼 프레임을 사용한다. 관제에서 돌아온 영상은 추론 입력으로 사용하지 않는다. 영상 공유는 프레임을 복사해 별도 전송 스레드로 넘기며 대기 프레임은 채널당 1개로 제한한다.
 
