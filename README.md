@@ -46,6 +46,19 @@ git rev-parse --short HEAD
 
 원격에 반영되지 않은 로컬 변경은 pull로 받을 수 없다. 4대 모두 같은 브랜치·커밋을 사용하고, 현장 수정 파일이 있으면 강제로 덮어쓰지 않는다.
 
+기존 개인 관제 저장소를 받은 Ubuntu PC는 폴더명을 바꿀 필요가 없다. 실행 중인 서버·중계를 종료하고 변경 파일을 먼저 보관한다. `git status --short`가 비어 있고 `main`에 있을 때 다음으로 팀 원격을 연결한다. 별도 YOLO/ACT 실험 clone에 이 명령을 적용하지 않는다.
+
+```bash
+git status --short
+git branch --show-current
+git remote set-url origin https://github.com/kernel-robot-9th/kernel-robot-repo-3.git
+git fetch origin
+git merge --ff-only origin/main
+git branch --set-upstream-to=origin/main main
+```
+
+빠른 병합이 거부되면 현장 커밋을 확인한다. reset이나 강제 push로 해결하지 않는다. 예전 `integrations/omx_yolo/config/`의 보정 파일은 자동 이동하지 않으므로 현재 설정 파일의 경로를 확인하고 `robots/omx_yolo/config/` 또는 별도 현장 설정 폴더로 옮긴다. 다른 로봇팔의 보정값으로 대체하지 않는다.
+
 필요한 기본 도구는 `git`, `python3-venv`, `python3-pip`이다. Node/pnpm이 이미 호환 버전이면 재설치하지 않는다. Node 버전 관리 도구를 쓰는 경우 [nvm 공식 안내](https://github.com/nvm-sh/nvm#installing-and-updating)를 따른다. ROS에 맞춰 설치된 시스템 Python을 교체하지 않는다.
 
 ```bash
@@ -83,6 +96,7 @@ python scripts/prepare_models.py verify --model act-left-v2-050000 --root ~/omx_
 - 중앙 + 중계 3개를 별도 프로세스로 띄운 HTTP 모의 시험: 두 고객 각각 4개(3+1) 인계, 집기 실패, 통신 끊김 통과.
 - 장비 테스트 HTTP 모의 통합 8개 항목 통과: 중계 3개 응답, 설정 검사, 적재 확인·해제, 하역 관측·정지, 중지 수신 구분, 실패, 연결 끊김, 주문 재고 보존.
 - YOLO 모델 SHA-256 및 중계 모듈의 Python 3.10 문법 검사 통과.
+- 팀 저장소를 새로 clone해 실행부 import·YOLO 모의 계획을 확인했다. 팀 Releases에서 YOLO와 ACT ZIP을 실제 다운로드하고, ACT 내부 파일 7개까지 크기·SHA-256 검증을 통과했다.
 - 실제 OMX/Pinky, Ubuntu 4대 LAN, 카메라 5개 동시 전송, ACT 추론 성능, 브라우저 영상 재생은 미검증.
 
 관제의 **장비 테스트** 탭은 주문을 만들지 않고 중계 명령·응답을 확인한다. 일반 모의 중계에서도 사용할 수 있다. 실물은 [현장 안내 8번](FIELD_SETUP.md#8-장비-테스트-탭으로-omx-단독-연결)의 시험 전용 실행부를 사용한다. Pinky 없이 시작할 수 있지만 실제 바구니 고정과 OMX 설정은 필요하다. 운영자 확인은 자동 비전 판정과 구별해서 저장한다. `python scripts/demo_device_tests.py`는 중앙+중계 3개의 HTTP 모의 통합 시험을 수행한다.
