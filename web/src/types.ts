@@ -23,7 +23,7 @@ export interface Command {
   result: { kind: string; data: Record<string, unknown> } | null;
 }
 export interface Snapshot {
-  run_id: string; mode: 'mock' | 'hardware'; sessions: Record<string, Session>; orders: Record<string, Order>;
+  run_id: string; mode: 'mock' | 'hardware'; test_only: boolean; test_hold: string | null; sessions: Record<string, Session>; orders: Record<string, Order>;
   tasks: Record<string, Task>; commands: Record<string, Command>;
   zones: Record<string, { owner?: string | null; queue?: string[]; busy?: boolean; mine?: boolean; waiting?: number }>;
   devices?: Record<string, { connected: boolean; forced_offline: boolean }>;
@@ -33,7 +33,7 @@ export interface Snapshot {
   trips: Record<string, { id: string; session_id: string; number: number; state: string; unit_ids: string[] }>;
   units: Record<string, { id: string; session_id: string; sku: string; state: string; trip_id: string | null; slot: number | null }>;
   gateway_mode?: 'distributed';
-  gateways?: Record<string, { label: string; devices: string[]; capabilities: string[]; instance_id: string | null; heartbeat_at: number | null; connected: boolean }>;
+  gateways?: Record<string, { label: string; devices: string[]; capabilities: string[]; role?: 'test' | 'control'; instance_id: string | null; heartbeat_at: number | null; connected: boolean }>;
 }
 export interface Audit {
   seq: number; at: number; kind: string; session_id: string | null; task_id: string | null;

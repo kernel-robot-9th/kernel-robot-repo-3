@@ -72,10 +72,12 @@ class DistributedEngine(Engine):
                     self._fault(task, reason)
 
     @atomic
-    def node_heartbeat(self, node_id, instance_id):
+    def node_heartbeat(self, node_id, instance_id, role='control'):
         require(node_id in self.state["gateways"], "등록되지 않은 중개입니다", 403)
         node = self.state["gateways"][node_id]
         old = node["instance_id"]
+        require(role in {'control', 'test'}, '중계 역할 오류')
+        require(old != instance_id or node.get('role', role) == role, '같은 실행에서 중계 역할을 바꿀 수 없습니다')
         require(instance_id not in node.setdefault("retired_instances", []), "교체된 중개 실행입니다. 상태 확인이 필요합니다")
         # A live instance cannot be displaced by an accidental second launch.
         require(not old or old == instance_id or not self._fresh_observation_node(node),
@@ -84,10 +86,10 @@ class DistributedEngine(Engine):
             self._fault_devices(node["devices"], f"중개 재연결: {node_id} · 상태 확인 필요")
             if old != instance_id:
                 node["retired_instances"].append(old)
-        node.update(instance_id=instance_id, heartbeat_at=self.clock(), connected=True)
+        node.update(instance_id=instance_id, heartbeat_at=self.clock(), connected=True, role=role)
         for device_id in node["devices"]:
             device = self.state["devices"][device_id]
-            device["connected"] = not device["forced_offline"]
+            device["connected"] = role == 'control' and not device["forced_offline"]
         if old != instance_id:
             self._log("gateway_connected", {"gateway_id": node_id, "devices": node["devices"], "mode": self.mode})
         return {"run_id": self.state["run_id"], "mode": self.mode, "devices": node["devices"],
@@ -96,6 +98,7 @@ class DistributedEngine(Engine):
     @atomic
     def node_claim(self, node_id, instance_id):
         node = self._node(node_id, instance_id)
+        require(node.get('role', 'control') == 'control' and not self.test_only, '시험 전용 중계/서버는 주문 명령을 실행하지 않습니다')
         command = Engine.claim.__wrapped__(self, node_id, node["devices"])
         if command:
             actual = self.state["commands"][command["id"]]

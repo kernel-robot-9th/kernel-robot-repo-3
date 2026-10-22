@@ -71,11 +71,12 @@ class Engine:
     command_timeout = 120
     heartbeat_timeout = 10
 
-    def __init__(self, path=":memory:", clock=time.time, *, catalog_path=PRODUCTS_PATH, mode="mock", readiness=None):
+    def __init__(self, path=":memory:", clock=time.time, *, catalog_path=PRODUCTS_PATH, mode="mock", readiness=None, test_only=False):
         require(mode in {"mock", "hardware"}, "장비 모드 오류", 422)
         self.mode, self.readiness = mode, readiness or {}
+        self.test_only = test_only
         if mode == "hardware":
-            require(self.readiness.get("approved") is True, "현장 연결 검증 설정이 필요합니다")
+            require(test_only or self.readiness.get("approved") is True, "현장 연결 검증 설정이 필요합니다")
             # Field adapters must continuously report parking/basket observations.
             # Never reuse the generous manual-step MOCK observation window.
             self.observation_ttl = 2
@@ -87,6 +88,8 @@ class Engine:
             self.store.close()
             raise DomainError("모의·실물 DB를 분리하세요")
         self.state = stored or self._fresh()
+        from .device_tests import empty
+        self.state.setdefault('device_tests', empty())
         if stored:
             self._recover()
         self.store.save(self.state, self.records)
@@ -95,6 +98,7 @@ class Engine:
     def _fresh(self):
         return {
             "schema_version": 2, "units": {}, "trips": {},
+            "device_tests": {"jobs": {}, "nodes": {}, "hold": None},
             "stock": {sku: {"on_hand": p["initial_stock"], "reserved": 0} for sku, p in self.products.items()},
             "catalog_reconciliation_required": False,
             "run_id": uid(), "mode": self.mode, "sessions": {}, "orders": {}, "tasks": {},
@@ -115,6 +119,11 @@ class Engine:
                              "command_id": command["id"] if command else None})
 
     def _recover(self):
+        for job in self.state['device_tests']['jobs'].values():
+            if job['status'] not in {'SUCCEEDED', 'FAILED', 'CANCELLED', 'WAIT_REVIEW'}:
+                job['status'] = 'UNCERTAIN' if job['kind'] in {'PICK', 'HANDOFF'} else 'FAILED'
+                job['stop_requested_at'] = job['stop_requested_at'] or self.clock()
+        self.state['device_tests']['nodes'] = {}
         # Never invent current stock for an earlier checkpoint or a changed catalog.
         legacy = self.state.get("schema_version") != 2
         if legacy:
@@ -200,6 +209,7 @@ class Engine:
             if order["session_id"] == sid and order["request_id"] == request_id:
                 require(order["items"] == normalized, "같은 요청 ID의 주문 내용이 다릅니다")
                 return deepcopy(order)
+        require(not self.test_only and not self.state['device_tests']['hold'], '장비 시험 중입니다. 시험 종료·원위치 확인 후 주문할 수 있습니다')
         require(not session["checkout_requested"] and session["state"] == "SHOPPING" and not session["error"],
                 "지금은 추가 주문을 받을 수 없습니다")
         require(not self.state["catalog_reconciliation_required"], "기존 실행의 재고 확인이 필요합니다")
@@ -334,6 +344,8 @@ class Engine:
                     and basket["task_id"] == task["id"] and self._fresh_observation(basket["at"]))
 
     def _pump(self):
+        if self.test_only or self.state['device_tests']['hold']:
+            return
         for session in self.state["sessions"].values():
             if session["error"] or session["state"] == "COMPLETED":
                 continue
@@ -662,6 +674,9 @@ class Engine:
                 session.pop("token_hash")
             out["products"], out["capacity"] = deepcopy(list(self.products.values())), self.capacity
             out["cart_capacity"] = self.cart_capacity
+            out['test_only'] = self.test_only
+            out['test_hold'] = self.state['device_tests']['hold']
+            out.pop('device_tests', None)
             for product in out["products"]:
                 stock = self.state["stock"].get(product["sku"])
                 product.update(stock=deepcopy(stock), available=stock["on_hand"] - stock["reserved"] if stock else None)

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 JOINTS = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper'}
 
 
-def validate(config, *, check_files=True):
+def validate(config, *, check_files=True, require_mobile=True, check_slots=True):
     errors = []
     if config.get('armed') is not True:
         errors.append('armed=false: 실물 실행 승인 설정 전')
@@ -24,7 +24,7 @@ def validate(config, *, check_files=True):
         errors.append('video.fps: 1~30 정수 필요')
     if video.get('transport') == 'rtsp' and not video.get('rtsp_urls'):
         errors.append('video.rtsp_urls: 담당 채널 게시 주소 필요')
-    if node == 'gateway-a' and not config.get('mobile_factory'):
+    if require_mobile and node == 'gateway-a' and not config.get('mobile_factory'):
         errors.append('Pinky 주행·정차·이탈·중단 어댑터 미연결 (ROS 이름을 추정하지 않음)')
     arm = config.get('act') if node == 'gateway-c' else config.get('yolo')
     if not isinstance(arm, dict):
@@ -74,7 +74,7 @@ def validate(config, *, check_files=True):
         path('camera_by_id', '/dev/v4l/by-id/')
         for name in ('pick_config', 'calibration_file', 'poses_file'):
             path(name)
-        for robot in ('pinky-1', 'pinky-2'):
+        for robot in (('pinky-1', 'pinky-2') if check_slots else ()):
             slots = arm.get('drop_slots', {}).get(robot, {})
             if set(slots) != {'0', '1', '2'} or any(not isinstance(p, dict) or not p.get('approach') or not p.get('release') for p in slots.values()):
                 errors.append(robot + ': 적재 위치 3곳의 접근·놓기 자세 이름 필요')

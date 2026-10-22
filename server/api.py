@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from .domain import DomainError, Engine
 from .distributed import DistributedEngine
 from .video import VIDEO_PATH, VideoRegistry
+from .device_tests import Bench
 
 
 class Input(BaseModel):
@@ -42,6 +43,46 @@ class NodeConnection(Input):
     node_id: str = Field(min_length=1, max_length=80)
     instance_id: str = Field(min_length=8, max_length=80)
     mode: Literal['mock', 'hardware'] = 'mock'
+    role: Literal['control', 'test'] = 'control'
+
+
+class TestRequest(Input):
+    node_id: Literal['gateway-a', 'gateway-b', 'gateway-c']
+    kind: Literal['PING', 'INSPECT', 'PICK', 'HANDOFF']
+    request_id: str = Field(min_length=8, max_length=80)
+    parameters: dict = Field(default_factory=dict)
+    prepared: bool = False
+    simulate_failure: bool = False
+
+
+class TestPoll(NodeConnection):
+    profile: dict = Field(default_factory=dict)
+    available: bool = False
+
+
+class TestEvent(NodeConnection):
+    job_id: str
+    event_id: str = Field(min_length=8, max_length=100)
+    kind: Literal['ACCEPTED', 'STARTED', 'STOP_ACK', 'FINISHED', 'ERROR']
+    data: dict = Field(default_factory=dict)
+
+
+class TestReview(Input):
+    operator: str = Field(min_length=1, max_length=80, pattern=r'\S')
+    success: bool = False
+    stopped: bool = False
+    process_closed: bool = False
+    note: str = Field(min_length=1, max_length=500, pattern=r'\S')
+
+
+class TestObservation(Input):
+    operator: str = Field(min_length=1, max_length=80, pattern=r'\S')
+    facts: dict[str, bool]
+
+
+class TestRelease(Input):
+    operator: str = Field(min_length=1, max_length=80, pattern=r'\S')
+    restored: bool = False
 
 
 class NodeEvent(NodeConnection):
@@ -132,13 +173,15 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
             raise RuntimeError('실물 연결은 분산 중계 모드에서만 지원합니다')
         readiness_path = os.getenv('SHOP_HARDWARE_READINESS')
         readiness = json.loads(Path(readiness_path).read_text(encoding='utf-8')) if readiness_path else None
-        app.state.engine = engine if injected else (DistributedEngine(database, mode=mode, readiness=readiness)
-                                                    if distributed else Engine(database, mode=mode, readiness=readiness))
+        test_only = os.getenv('SHOP_TEST_ONLY') == '1'
+        app.state.engine = engine if injected else (DistributedEngine(database, mode=mode, readiness=readiness, test_only=test_only)
+                                                    if distributed else Engine(database, mode=mode, readiness=readiness, test_only=test_only))
 
         async def monitor():
             while True:
                 await asyncio.sleep(1)
                 app.state.engine.watchdog()
+                Bench(app.state.engine).watchdog()
 
         monitor_task = asyncio.create_task(monitor())
         try:
@@ -152,7 +195,7 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
             if lockfile:
                 lockfile.close()
 
-    app = FastAPI(title="쇼핑키프로 작업 제어 · MOCK", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="카트리나 작업 제어", version="0.1.0", lifespan=lifespan)
 
     def control(request: Request):
         return request.app.state.engine
@@ -195,6 +238,7 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     @app.get("/api/health")
     def health(e=Depends(control)):
         return {"status": "ok", "mode": e.mode, "gateway_mode": "distributed" if distributed else "single",
+                "test_only": e.test_only,
                 "preview_id": os.getenv("SHOP_PREVIEW_ID"),
                 "physical_hardware_verified": False}
 
@@ -230,6 +274,44 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     @app.get("/api/admin/logs", dependencies=[Depends(admin)])
     def logs(e=Depends(control)):
         return {"items": e.logs()}
+
+    @app.get('/api/admin/device-tests', dependencies=[Depends(admin)])
+    def tests(e=Depends(control)):
+        return Bench(e).snapshot()
+
+    @app.post('/api/admin/device-tests', dependencies=[Depends(admin)])
+    def test_create(body: TestRequest, e=Depends(control)):
+        return Bench(e).create(body.node_id, body.kind, body.parameters, body.request_id, body.prepared, body.simulate_failure)
+
+    @app.post('/api/admin/device-tests/{jid}/stop', dependencies=[Depends(admin)])
+    def test_stop(jid: str, e=Depends(control)):
+        return Bench(e).stop(jid)
+
+    @app.post('/api/admin/device-tests/{jid}/observe', dependencies=[Depends(admin)])
+    def test_observe(jid: str, body: TestObservation, e=Depends(control)):
+        return Bench(e).observe(jid, body.operator, body.facts)
+
+    @app.post('/api/admin/device-tests/{jid}/review', dependencies=[Depends(admin)])
+    def test_review(jid: str, body: TestReview, e=Depends(control)):
+        return Bench(e).review(jid, **body.model_dump())
+
+    @app.post('/api/admin/device-tests/{jid}/release', dependencies=[Depends(admin)])
+    def test_release(jid: str, body: TestRelease, e=Depends(control)):
+        return Bench(e).release(jid, body.operator, body.restored)
+
+    @app.post('/api/nodes/device-tests/poll')
+    def test_poll(body: TestPoll, principal=Depends(node_auth), e=Depends(control)):
+        owned(body, principal)
+        if body.mode != e.mode:
+            raise HTTPException(409, '시험 실행 모드 불일치')
+        return Bench(e).poll(principal, body.instance_id, body.profile, body.available)
+
+    @app.post('/api/nodes/device-tests/events')
+    def test_event(body: TestEvent, principal=Depends(node_auth), e=Depends(control)):
+        owned(body, principal)
+        if body.mode != e.mode:
+            raise HTTPException(409, '시험 결과 모드 불일치')
+        return Bench(e).event(principal, body.instance_id, body.job_id, body.event_id, body.kind, body.data)
 
     @app.get('/api/admin/video', dependencies=[Depends(admin)])
     def video_list():
@@ -319,7 +401,7 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         owned(body, principal)
         if body.mode != e.mode:
             raise HTTPException(409, '중계와 중앙의 장비 모드가 다릅니다')
-        return e.node_heartbeat(body.node_id, body.instance_id)
+        return e.node_heartbeat(body.node_id, body.instance_id, body.role)
 
     @app.post("/api/nodes/commands/claim")
     def node_claim(body: NodeConnection, principal=Depends(node_auth), e=Depends(control)):

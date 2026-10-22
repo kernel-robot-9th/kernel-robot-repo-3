@@ -88,6 +88,8 @@ def main():
               if config['video']['transport'] == 'rtsp' else JpegSender(args.server, token, instance))
     frames = LatestFramePublisher(sender, config['video'].get('fps', 5))
     executor = Executor(config, EvidenceFiles(config['evidence_directory']), frames)
+    from robot_gateway.test_agent import TestAgent, HardwareTrials
+    trial = TestAgent(client, identity, path.with_name('device-tests.json'), HardwareTrials(config, frames, execute=False))
     state = {'run_id': hello['run_id'], 'inflight': {}, 'pending': []}
     jobs, sent_observations = {}, {}
     pool = ThreadPoolExecutor(max_workers=4)
@@ -113,6 +115,7 @@ def main():
                 if hello['run_id'] != state['run_id']:
                     raise RuntimeError('실물 실행 ID 변경: 현장 상태 확인 필요')
                 last_contact = time.monotonic()
+                trial.tick()
                 while state['pending']:
                     client.call('/api/nodes/events', {**identity, 'event': state['pending'][0]})
                     state['pending'].pop(0); persist()
@@ -171,6 +174,7 @@ def main():
         ending.set()
         for _, cancelled, _ in jobs.values():
             cancelled.set()
+        trial.close()
         if hasattr(sender, 'close'):
             sender.close()
         frames.close()

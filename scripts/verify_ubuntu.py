@@ -37,7 +37,8 @@ def main():
     checks = [("control_and_api_tests", [sys.executable, "-m", "pytest", "-q", "--junitxml=reports/junit.xml"], ROOT),
               ("typescript_and_web_build", ["pnpm", "run", "build"], ROOT / "web"),
               ("separate_process_http_demo", [sys.executable, "scripts/demo_ubuntu.py"], ROOT),
-              ("three_gateway_http_demo", [sys.executable, "scripts/demo_distributed.py"], ROOT)]
+              ("three_gateway_http_demo", [sys.executable, "scripts/demo_distributed.py"], ROOT),
+              ("device_test_http_demo", [sys.executable, "scripts/demo_device_tests.py"], ROOT)]
     try:
         for name, command, cwd in checks:
             with (reports / f"{name}.log").open("w", encoding="utf-8") as log:

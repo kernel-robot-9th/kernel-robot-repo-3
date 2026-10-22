@@ -18,7 +18,7 @@ const task = computed(() => session.value?.current_task ? state.value?.tasks[ses
 const orders = computed(() => Object.values(state.value?.orders || {}))
 const ordered = computed(() => orders.value.filter(o => o.status !== 'CANCELLED').reduce((n, order) => n + Object.values(order.items).reduce((a, b) => a + b, 0), 0))
 const selected = computed(() => Object.values(quantities.value).reduce((a, b) => a + Number(b || 0), 0))
-const canOrder = computed(() => session.value && !session.value.checkout_requested && !session.value.error)
+const canOrder = computed(() => session.value && !session.value.checkout_requested && !session.value.error && !state.value?.test_only && !state.value?.test_hold)
 const trip = computed(() => session.value?.active_trip ? state.value?.trips[session.value.active_trip] : undefined)
 const selectionAvailable = computed(() => products.value.every(p => (quantities.value[p.sku] || 0) <= (p.available ?? 0)))
 function canAdd(p: Product) {
@@ -124,7 +124,7 @@ onMounted(async () => {
           <p v-if="!selectionAvailable && !pendingOrder" class="danger" role="status">주문 가능 수량이 변경됐습니다. 선택 수량을 줄여주세요.</p>
           <button class="primary" :disabled="busy || !canOrder || (!pendingOrder && (selected === 0 || selected > 6 || !selectionAvailable))" @click="order">{{ pendingOrder ? '접수 확인 재시도 (같은 주문)' : '주문 제출' }}</button>
           <p v-if="pendingOrder" class="muted">응답이 확인되지 않았습니다. 같은 주문 ID로 재확인합니다.</p>
-          <p v-if="!canOrder" class="muted">인계 요청 또는 작업 오류로 추가 주문이 제한되었습니다.</p>
+          <p v-if="!canOrder" class="muted">{{ state?.test_only || state?.test_hold ? '장비 시험 중입니다. 시험 종료·원위치 확인 후 주문할 수 있습니다.' : '인계 요청 또는 작업 오류로 추가 주문이 제한되었습니다.' }}</p>
         </div>
       </section>
       <section v-else class="shopping-status">

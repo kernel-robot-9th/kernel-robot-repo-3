@@ -38,11 +38,14 @@ def main():
     instance = str(uuid.uuid4())
     identity = {"node_id": args.node, "instance_id": instance}
     client = Client(args.server, token)
+    from .test_agent import TestAgent
+    trial = TestAgent(client, identity, path.with_name(path.stem + '-device-tests.json'))
     offline = False
     print(f"{args.node} · MOCK · 실제 장비 연결 없음", flush=True)
     while True:
         try:
             hello = client.call("/api/nodes/heartbeat", identity)
+            trial.tick()
             if hello["run_id"] != state["run_id"]:
                 state = {"run_id": hello["run_id"], "pending": None}
                 save_state(path, state)

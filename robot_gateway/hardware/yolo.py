@@ -87,10 +87,15 @@ class YoloArm:
                         'hover_high': 'hover_high', 'drop_approach': names['approach'], 'drop_release': names['release']}.items()}
                     plan = build_plan(job, calibration, target, saved, solver_for())
                     execute(plan, driver)
+                    if command.get('scope') == 'device_test':
+                        # A completed trajectory is not proof that an item was loaded.
+                        continue
                     proof = self.evidence.wait(command, 'pick-' + str(item['slot']), cancelled)
                     if proof.get('confirmed_items') != [item]:
                         raise RuntimeError('실제 적재 상품·위치 확인 불일치')
                     self.confirmed.append(item.copy())
+                if command.get('scope') == 'device_test':
+                    return {'attempted_items': command['items'], 'operator_review_required': True}
                 return {'confirmed_items': self.confirmed.copy()}
             finally:
                 driver.hold()
