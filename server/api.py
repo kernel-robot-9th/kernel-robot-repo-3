@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from .domain import DomainError, Engine
 from .distributed import DistributedEngine
-from .video import VIDEO_PATH, VideoRegistry
+from .video import VIDEO_PATH, FIELD_VIDEO_PATH, VideoRegistry
 from .device_tests import Bench
 
 
@@ -48,7 +48,7 @@ class NodeConnection(Input):
 
 class TestRequest(Input):
     node_id: Literal['gateway-a', 'gateway-b', 'gateway-c']
-    kind: Literal['PING', 'INSPECT', 'PICK', 'HANDOFF']
+    kind: Literal['PING', 'INSPECT', 'PICK', 'HANDOFF', 'NAVIGATE']
     request_id: str = Field(min_length=8, max_length=80)
     parameters: dict = Field(default_factory=dict)
     prepared: bool = False
@@ -63,7 +63,7 @@ class TestPoll(NodeConnection):
 class TestEvent(NodeConnection):
     job_id: str
     event_id: str = Field(min_length=8, max_length=100)
-    kind: Literal['ACCEPTED', 'STARTED', 'STOP_ACK', 'FINISHED', 'ERROR']
+    kind: Literal['ACCEPTED', 'STARTED', 'STOP_ACK', 'PROGRESS', 'FINISHED', 'ERROR']
     data: dict = Field(default_factory=dict)
 
 
@@ -143,7 +143,10 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     node_tokens = node_tokens if node_tokens is not None else json.loads(os.getenv("SHOP_NODE_TOKENS", "{}"))
     distributed = isinstance(engine, DistributedEngine) or (engine is None and os.getenv("SHOP_GATEWAY_MODE") == "distributed")
     security = HTTPBearer(auto_error=False)
-    video = video or VideoRegistry(os.getenv('SHOP_VIDEO_CONFIG', str(VIDEO_PATH)))
+    configured_mode = engine.mode if injected else os.getenv('SHOP_DEVICE_MODE', 'mock')
+    video = video or VideoRegistry(os.getenv('SHOP_VIDEO_CONFIG', str(FIELD_VIDEO_PATH if configured_mode == 'hardware' else VIDEO_PATH)))
+    if configured_mode == 'hardware' and any(f['transport'] == 'mock' for f in video.feeds.values()):
+        raise RuntimeError('실물 연결 모드에서는 가상 영상 설정을 사용할 수 없습니다')
 
     @asynccontextmanager
     async def lifespan(app):
@@ -174,7 +177,12 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         readiness_path = os.getenv('SHOP_HARDWARE_READINESS')
         readiness = json.loads(Path(readiness_path).read_text(encoding='utf-8')) if readiness_path else None
         test_only = os.getenv('SHOP_TEST_ONLY') == '1'
-        app.state.engine = engine if injected else (DistributedEngine(database, mode=mode, readiness=readiness, test_only=test_only)
+        from .reference import ReferenceEngine
+        reference = os.getenv('SHOP_MOTION_BACKEND') == 'reference_v4'
+        if not injected and reference and (not distributed or mode != 'mock'):
+            raise RuntimeError('reference_v4는 분산 MOCK 전용입니다. 실물 모드에 사용할 수 없습니다')
+        engine_type = ReferenceEngine if reference else DistributedEngine
+        app.state.engine = engine if injected else (engine_type(database, mode=mode, readiness=readiness, test_only=test_only)
                                                     if distributed else Engine(database, mode=mode, readiness=readiness, test_only=test_only))
 
         async def monitor():
@@ -239,16 +247,21 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     def health(e=Depends(control)):
         return {"status": "ok", "mode": e.mode, "gateway_mode": "distributed" if distributed else "single",
                 "test_only": e.test_only,
+                "motion_backend": 'external_adapter' if e.mode == 'hardware' else ('reference_v4' if 'road' in e.state else 'logical'),
+                "setup_only": e.mode == 'hardware' and e.test_only,
                 "preview_id": os.getenv("SHOP_PREVIEW_ID"),
                 "physical_hardware_verified": False}
 
     @app.get("/api/products")
     def products(e=Depends(control)):
         snapshot = e.snapshot()
-        return {"items": snapshot["products"], "capacity": snapshot["capacity"], "cart_capacity": snapshot['cart_capacity'], "mode": e.mode}
+        return {"items": snapshot["products"], "capacity": snapshot["capacity"], "cart_capacity": snapshot['cart_capacity'], "mode": e.mode,
+                "accepting_sessions": not e.test_only}
 
     @app.post("/api/sessions", status_code=201)
     def start(body: Start, e=Depends(control)):
+        if e.test_only:
+            raise HTTPException(409, '현장 설정·장비 시험 중입니다. 주문 운영 전환 후 쇼핑을 시작하세요')
         return e.create_session(body.label)
 
     @app.get("/api/customer/state")
@@ -278,6 +291,11 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     @app.get('/api/admin/device-tests', dependencies=[Depends(admin)])
     def tests(e=Depends(control)):
         return Bench(e).snapshot()
+
+    @app.get('/api/admin/motion-map', dependencies=[Depends(admin)])
+    def motion_map():
+        from robots.pinky.catalog import public_map
+        return public_map()
 
     @app.post('/api/admin/device-tests', dependencies=[Depends(admin)])
     def test_create(body: TestRequest, e=Depends(control)):
@@ -312,6 +330,41 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         if body.mode != e.mode:
             raise HTTPException(409, '시험 결과 모드 불일치')
         return Bench(e).event(principal, body.instance_id, body.job_id, body.event_id, body.kind, body.data)
+
+    def reference_engine(e):
+        if 'road' not in e.state:
+            raise HTTPException(409, 'v4 주문 통합 실행이 아닙니다')
+        return e
+
+    @app.get('/api/admin/road', dependencies=[Depends(admin)])
+    def road(e=Depends(control)):
+        return reference_engine(e).motion_snapshot()
+
+    @app.get('/api/admin/road/map', dependencies=[Depends(admin)])
+    def road_map(e=Depends(control)):
+        reference_engine(e)
+        from robots.pinky.compact import public_map
+        return public_map()
+
+    @app.post('/api/admin/road/stop', dependencies=[Depends(admin)])
+    def road_stop(e=Depends(control)):
+        return reference_engine(e).motion_stop()
+
+    @app.post('/api/admin/road/failure', dependencies=[Depends(admin)])
+    def road_failure(e=Depends(control)):
+        return reference_engine(e).motion_failure()
+
+    @app.post('/api/nodes/motion/poll')
+    def road_poll(body: TestPoll, principal=Depends(node_auth), e=Depends(control)):
+        owned(body, principal)
+        if body.mode != e.mode: raise HTTPException(409, '이동 실행 모드 불일치')
+        return reference_engine(e).motion_poll(principal, body.instance_id, body.profile, body.available)
+
+    @app.post('/api/nodes/motion/events')
+    def road_event(body: TestEvent, principal=Depends(node_auth), e=Depends(control)):
+        owned(body, principal)
+        if body.mode != e.mode: raise HTTPException(409, '이동 결과 모드 불일치')
+        return reference_engine(e).motion_event(principal, body.instance_id, body.job_id, body.event_id, body.kind, body.data)
 
     @app.get('/api/admin/video', dependencies=[Depends(admin)])
     def video_list():

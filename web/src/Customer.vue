@@ -6,6 +6,7 @@ import type { Product, Snapshot } from './types'
 const token = ref(sessionStorage.getItem('shopping.customer.token') || '')
 const name = ref('')
 const products = ref<Product[]>([])
+const acceptingSessions = ref(false)
 const state = ref<Snapshot | null>(null)
 const quantities = ref<Record<string, number>>({})
 const tab = ref<'products' | 'shopping'>('products')
@@ -31,6 +32,9 @@ function remove(p: Product) { quantities.value[p.sku] = Math.max(0, (quantities.
 const pendingOrder = ref<{ request_id: string; items: { sku: string; quantity: number }[] } | null>(
   JSON.parse(sessionStorage.getItem('shopping.pending.order') || 'null'))
 const { refresh, connectionError, lastUpdate } = usePolling(async () => {
+  const catalog = await api<{ items: Product[]; accepting_sessions: boolean }>('/products')
+  products.value = catalog.items
+  acceptingSessions.value = catalog.accepting_sessions
   if (!token.value || expired.value) return
   try {
     state.value = await api<Snapshot>('/customer/state', token.value)
@@ -85,11 +89,7 @@ function newSession() {
   sessionStorage.removeItem('shopping.customer.token'); sessionStorage.removeItem('shopping.pending.order')
 }
 const productName = (sku: string) => products.value.find(p => p.sku === sku)?.name || sku
-onMounted(async () => {
-  try { products.value = (await api<{ items: Product[] }>('/products')).items }
-  catch (e) { error.value = String(e) }
-  await refresh()
-})
+onMounted(refresh)
 </script>
 
 <template>
@@ -98,13 +98,13 @@ onMounted(async () => {
     <div v-if="connectionError" class="alert danger" role="alert">상태 갱신 실패 · {{ connectionError }}<br />마지막 표시 상태입니다. 완료 또는 정지를 뜻하지 않습니다.</div>
     <div v-if="error" class="alert danger" role="alert">{{ error }}</div>
     <div v-if="note" class="alert success" role="status">{{ note }}</div>
-    <section v-if="!token" class="panel start-panel">
+    <section v-if="!acceptingSessions && !connectionError" class="panel start-panel"><h2>주문 접수 대기</h2><p>현장 장비를 연결하고 설정을 확인하고 있습니다. 주문 운영으로 전환하면 쇼핑을 시작할 수 있습니다.</p></section>
+    <section v-else-if="!token" class="panel start-panel">
       <h2>쇼핑 시작</h2><p>고객별로 서로 다른 Pinky를 배정합니다.</p>
-      <form @submit.prevent="start"><label for="customer-name">시연 고객 이름</label><input id="customer-name" v-model="name" maxlength="40" required placeholder="예: 고객 A" />
-        <button class="primary" :disabled="busy || !name.trim()">로봇 배정받고 시작</button></form>
-      <p class="muted">두 고객 시험은 다른 기기 또는 별도 브라우저 세션에서 시작하세요.</p>
+      <form @submit.prevent="start"><label for="customer-name">고객 이름</label><input id="customer-name" v-model="name" maxlength="40" required autocomplete="name" />
+        <button class="primary" :disabled="busy || !name.trim() || !acceptingSessions || !!connectionError">로봇 배정받고 시작</button></form>
     </section>
-    <section v-else-if="expired" class="panel"><h2>세션을 다시 시작해주세요</h2><p>관리자가 새 모의 실행을 시작했거나 세션이 유효하지 않습니다.</p><button @click="newSession">새 쇼핑 시작</button></section>
+    <section v-else-if="expired" class="panel"><h2>세션을 다시 시작해주세요</h2><p>기존 쇼핑 세션이 유효하지 않습니다.</p><button @click="newSession">새 쇼핑 시작</button></section>
     <template v-else-if="session">
       <section class="assignment"><div><small>{{ session.label }}님의 배정 로봇</small><strong>{{ session.robot_id }}</strong><small>{{ session.basket_side === 'left' ? '왼쪽' : '오른쪽' }} 인계 장바구니</small></div><span class="pill">{{ label(session.state) }}</span></section>
       <nav class="tabs" aria-label="고객 메뉴"><button :class="{ active: tab === 'products' }" @click="tab = 'products'">상품 주문</button><button :class="{ active: tab === 'shopping' }" @click="tab = 'shopping'">내 쇼핑</button></nav>

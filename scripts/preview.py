@@ -1,4 +1,4 @@
-"""Owned subprocess supervisor for a loopback-only, in-memory distributed demo."""
+"""Owned loopback preview: mock workers or a central-only field setup screen."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -21,8 +21,12 @@ def read_health(base):
 
 
 class PreviewGroup:
-    def __init__(self, directory, port=8000, auto=False):
+    def __init__(self, directory, port=8000, auto=False, reference=False, field=False):
         self.directory, self.port, self.auto = directory, port, auto
+        if field and (auto or reference):
+            raise ValueError('현장 설정 화면에는 모의 중계·자동 재생을 함께 사용할 수 없습니다')
+        self.field = field
+        self.reference = reference
         self.base = f'http://127.0.0.1:{port}'
         self.children, self.logs = {}, []
         self.preview_id = str(uuid.uuid4())
@@ -47,6 +51,9 @@ class PreviewGroup:
         env = os.environ.copy()
         env.update(PYTHONUNBUFFERED='1', PYTHONUTF8='1', SHOP_ADMIN_TOKEN=self.credentials['admin'],
                    SHOP_NODE_TOKENS=json.dumps(self.credentials['nodes']), SHOP_PREVIEW_ID=self.preview_id)
+        env['SHOP_MOTION_BACKEND'] = 'reference_v4' if self.reference else ''
+        env['SHOP_PREVIEW_PROFILE'] = 'field' if self.field else 'mock'
+        env['SHOP_VIDEO_CONFIG'] = str(ROOT / 'config' / ('video-field.json' if self.field else 'video.json'))
         self.launch('server', ['-m', 'uvicorn', 'server.preview:create_app', '--factory',
                               '--host', '127.0.0.1', '--port', str(self.port), '--log-level', 'warning'], env)
         deadline = time.monotonic() + 20
@@ -61,7 +68,9 @@ class PreviewGroup:
             time.sleep(0.15)
         else:
             raise RuntimeError('서버 시작 시간 초과')
-        for node, token in self.credentials['nodes'].items():
+        # Field view starts the central UI only. Actual Ubuntu workers connect
+        # separately; never turn virtual heartbeats into apparent live devices.
+        for node, token in ({} if self.field else self.credentials['nodes']).items():
             worker_env = os.environ.copy()
             for key in ['SHOP_ADMIN_TOKEN', 'SHOP_NODE_TOKENS', 'SHOP_GATEWAY_TOKEN']:
                 worker_env.pop(key, None)
@@ -101,7 +110,11 @@ def main():
     parser.add_argument('action', choices=['start', 'serve', 'stop', 'status'])
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--auto', action='store_true')
+    parser.add_argument('--reference', action='store_true', help='v4 주문·이동 통합 모의 실행')
+    parser.add_argument('--field', action='store_true', help='현장 설정 화면만 실행 · 모의 중계/영상 없음 · 로봇 동작 없음')
     args = parser.parse_args()
+    if args.field and (args.auto or args.reference):
+        parser.error('--field는 --auto/--reference와 함께 쓸 수 없습니다')
     directory = ROOT / 'runtime' / ('preview' if args.port == 8000 else f'preview-{args.port}')
     directory.mkdir(parents=True, exist_ok=True)
     status_file, stop_file = directory / 'status.json', directory / 'stop-request.json'
@@ -124,6 +137,10 @@ def main():
         command = [sys.executable, str(Path(__file__).resolve()), 'serve', '--port', str(args.port)]
         if args.auto:
             command.append('--auto')
+        if args.reference:
+            command.append('--reference')
+        if args.field:
+            command.append('--field')
         process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log,
                                    stderr=subprocess.STDOUT, creationflags=flags)
         log.close()
@@ -136,17 +153,19 @@ def main():
                     current = json.loads(status_file.read_text(encoding='utf-8'))
                     if (current.get('preview_id') != previous.get('preview_id') and
                             read_health(current['base']).get('preview_id') == current.get('preview_id')):
-                        print(f'미리보기 준비 완료 · MOCK ONLY\n고객: {current["base"]}/shop\n관리자: {current["base"]}/admin\n종료: python scripts/preview.py stop --port {args.port}')
+                        label = '현장 설정 화면 · 중계 미실행 · 장비 미연결' if args.field else 'MOCK ONLY'
+                        print(f'미리보기 준비 완료 · {label}\n고객: {current["base"]}/shop\n관리자: {current["base"]}/admin\n종료: python scripts/preview.py stop --port {args.port}')
                         return
                 except (OSError, ValueError, KeyError):
                     pass
             time.sleep(0.15)
         raise SystemExit('시작 확인 시간 초과: runtime/preview/supervisor.log 확인')
-    with PreviewGroup(directory, args.port, args.auto) as group:
+    with PreviewGroup(directory, args.port, args.auto, args.reference, args.field) as group:
         metadata = {'preview_id': group.preview_id, 'base': group.base,
-                    'started_at': datetime.now(timezone.utc).isoformat(), 'mode': 'mock'}
+                    'started_at': datetime.now(timezone.utc).isoformat(), 'mode': 'hardware' if args.field else 'mock',
+                    'field_view_only': args.field}
         status_file.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
-        print(f'READY · MOCK ONLY · 관리자 토큰은 {directory / "credentials.json"}에서 확인', flush=True)
+        print(f'READY · {"현장 설정 화면 / 장비 미연결" if args.field else "MOCK ONLY"} · 관리자 토큰은 {directory / "credentials.json"}에서 확인', flush=True)
         while True:
             if stop_file.exists() and json.loads(stop_file.read_text()).get('preview_id') == group.preview_id:
                 break

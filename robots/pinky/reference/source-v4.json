@@ -1,0 +1,27 @@
+{
+  "source": "pinky-omx-sim2real / route-plan-v4-review-20261022",
+  "route_version": 4,
+  "physical_hardware_verified": false,
+  "files": [
+    {
+      "path": "compact_routes.py",
+      "sha256": "fc56a773574d16db4d1f678a79f82b6931bea8231e3816787a07bf3e4cc99bfd"
+    },
+    {
+      "path": "geometry.py",
+      "sha256": "b20885810d9f3299fe8950ba422bb5bf1d2b2c789bab73bd2317e8e507cc1fdf"
+    },
+    {
+      "path": "route_paths.py",
+      "sha256": "911ca58a2459991dcf0e4d25604c2f1ad097052ee11c0c3b65805cab0260c439"
+    },
+    {
+      "path": "route_validation.py",
+      "sha256": "6f89237dbf51f9e85eb1bd6b0befa807c6a0958775d7aeaad694c84e8e1de329"
+    },
+    {
+      "path": "data/v4/layout.json",
+      "sha256": "a15c54bd77a41548a51c14cfe4defdda781a4a554234a8029c0c0668a7c66be6"
+    }
+  ]
+}

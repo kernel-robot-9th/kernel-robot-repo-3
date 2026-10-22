@@ -40,12 +40,15 @@ def main():
               ("typescript_and_web_build", ["pnpm", "run", "build"], ROOT / "web"),
               ("separate_process_http_demo", [sys.executable, "scripts/demo_ubuntu.py"], ROOT),
               ("three_gateway_http_demo", [sys.executable, "scripts/demo_distributed.py"], ROOT),
-              ("device_test_http_demo", [sys.executable, "scripts/demo_device_tests.py"], ROOT)]
+              ("device_test_http_demo", [sys.executable, "scripts/demo_device_tests.py"], ROOT),
+              ("pinky_reference_http_demo", [sys.executable, "scripts/demo_pinky_motion.py"], ROOT),
+              ("v4_orders_http_demo", [sys.executable, "scripts/demo_reference_orders.py"], ROOT),
+              ("v4_faults_http_demo", [sys.executable, "scripts/demo_reference_faults.py"], ROOT)]
     try:
         for name, command, cwd in checks:
             with (reports / f"{name}.log").open("w", encoding="utf-8") as log:
                 try:
-                    run = subprocess.run(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=180)
+                    run = subprocess.run(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=300 if name == 'v4_orders_http_demo' else 180)
                     code = run.returncode
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     log.write(str(exc))

@@ -23,6 +23,7 @@ export interface Command {
   result: { kind: string; data: Record<string, unknown> } | null;
 }
 export interface Snapshot {
+  motion_backend?: string; route_version?: number;
   run_id: string; mode: 'mock' | 'hardware'; test_only: boolean; test_hold: string | null; sessions: Record<string, Session>; orders: Record<string, Order>;
   tasks: Record<string, Task>; commands: Record<string, Command>;
   zones: Record<string, { owner?: string | null; queue?: string[]; busy?: boolean; mine?: boolean; waiting?: number }>;

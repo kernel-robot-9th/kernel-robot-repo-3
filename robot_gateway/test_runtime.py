@@ -50,7 +50,7 @@ def main():
             frames = LatestFramePublisher(sender, video.get('fps', 5))
             hardware = HardwareTrials(config, frames, execute=args.execute)
         agent = TestAgent(client, identity, Path('runtime/device-tests') / args.node / (args.mode + '.json'), hardware)
-        print(f'{args.node} · {args.mode.upper()} · ' + ('실물 시험 허용 조건 검사' if args.execute else '통신·설정 검사 / MOCK 모의 동작'), flush=True)
+        print(f'{args.node} · {args.mode.upper()} · ' + ('실물 시험 허용 조건 검사' if args.execute else '통신·설정 검사 전용 · 장비 동작 없음' if args.mode == 'hardware' else 'MOCK 모의 동작'), flush=True)
         try:
             while True:
                 try:

@@ -2,7 +2,7 @@
 
 ## 현재 제공 범위
 
-주문·재고·3개씩 다회 운반·좌우 목적지·하역 후 정지 확인·5채널 영상 화면을 구현했다. 기본 실행은 **MOCK**이다. 실물 실행부 코드는 준비했지만 아래 현장 입력값과 실제 장비 시험이 남아 있다. 테스트 통과를 실제 로봇 성공으로 해석하지 않는다.
+주문·재고·3개씩 다회 운반·좌우 목적지·하역 후 정지 확인·5채널 영상 화면을 구현했다. **지금 현장 세팅은 아래 현장 설정 모드로 시작한다.** 고객·주문·작업은 빈 상태, 중계·장비는 미연결, 영상은 실제 프레임 수신 대기로 시작한다. 상품 10종·초기 등록 수량 17개는 유지한다. 실물 실행부 코드는 준비했지만 현장 입력값과 실제 장비 시험이 남아 있다.
 
 | PC | 연결 장치 | 실행 |
 |---|---|---|
@@ -13,7 +13,60 @@
 
 PC 4대는 같은 공유기에 유선 연결한다. Pinky 2대도 이 공유기의 내부망을 사용한다. 중앙의 실제 LAN IP를 `ip -4 addr`로 확인한다. 인터넷 연결 여부와 내부 통신은 별개다. ROS 2 도메인·네임스페이스·토픽·Nav2 인터페이스는 실제 주행 성공 설정을 확인해 사용한다. 이 저장소는 해당 이름을 추정해 만들지 않았다.
 
-## 1. 우선 모의 실행
+## 1. 지금 현장 세팅 시작
+
+네 PC 모두 같은 커밋의 코드를 사용한다. 중앙은 Python 3.11~3.13, Node 24.12 이상 24.x와 pnpm 11이 필요하다. 첫 연결 검사는 Python 기본 환경만 사용하며 기존 YOLO·ACT 환경은 유지한다.
+
+```bash
+# 관제 PC · 저장소 루트
+bash scripts/setup_ubuntu.sh
+pnpm --dir web build
+.venv/bin/python scripts/prepare_field.py --server http://CENTRAL_LAN_IP:8000
+bash scripts/run_field_server.sh
+```
+
+`CENTRAL_LAN_IP`는 `ip -4 addr`로 확인한 관제 PC의 실제 유선 주소로 바꾼다. 공유기에서 해당 PC의 IP를 예약하면 재설정이 줄어든다. 관제 화면은 `http://CENTRAL_LAN_IP:8000/admin`이며 관리자 토큰은 `runtime/field/central.env`의 `SHOP_ADMIN_TOKEN`이다. `.env`나 모의 실행용 인증 파일과 혼용하지 않는다.
+
+중앙에서 생성한 파일을 아래와 같이 전달하고, 각 중계의 **저장소 안 `runtime/field/`**에 둔다. `credentials.json`과 `central.env`는 중앙에만 보관한다. 인증·장치 설정은 Git 제외다.
+
+| 중계 | 전달할 파일 | 실행 명령 |
+|---|---|---|
+| A | `gateway-a.env`, `gateway-a.hardware.json` | `bash scripts/run_field_gateway.sh gateway-a` |
+| B | `gateway-b.env`, `gateway-b.hardware.json` | `bash scripts/run_field_gateway.sh gateway-b` |
+| C | `gateway-c.env`, `gateway-c.hardware.json` | `bash scripts/run_field_gateway.sh gateway-c` |
+
+```bash
+# 각 중계 · 저장소 루트
+bash scripts/setup_gateway.sh
+mkdir -p runtime/field
+# 이 위치에 해당 중계의 위 두 파일을 전달한 뒤
+curl http://CENTRAL_LAN_IP:8000/api/health
+bash scripts/run_field_gateway.sh gateway-a
+# B/C에서는 마지막 인자를 gateway-b / gateway-c로 바꾼다.
+```
+
+`/api/health`에서 `mode=hardware`, `test_only=true`, `setup_only=true`를 확인한다. 관제 **장비 테스트**에서 A/B/C 각각 `통신 응답 확인` → `설정 검사`를 실행한다. 중계 3/3 연결은 통신 확인이며 USB·카메라·모델 준비 완료를 뜻하지 않는다. 생성 직후 미설정 장치·보정값이 표시되는 것은 정상이다. 확인한 값을 각 `gateway-*.hardware.json`에 입력한다.
+
+이 실행 명령에는 `--execute`가 없어 모터·카메라를 열지 않는다. 주문 접수도 대기 상태다. 실제 팔 시험은 8번, 주문 운영 전환은 5번의 조건을 채운 뒤 진행한다. 실물 Pinky 주행 어댑터·정밀 주차·결과 관측은 아직 연결/검증해야 한다. 현장 화면에는 가상 이동 위치를 표시하지 않는다.
+
+재실행해도 기존 인증 파일·장치 설정·DB를 덮어쓰지 않는다. 중앙 주소를 바꿨다면 각 중계 env의 `SHOP_SERVER_URL`을 수정한다. `runtime/field/shopping.db`는 현장 설정 전용이며 모의 DB를 복사하지 않는다. 화면 새로고침이나 서버 재시작으로 기록을 지우지 않는다.
+
+개발 PC에서 같은 빈 화면만 확인하려면 다음을 사용한다. 이 명령은 메모리 DB와 중앙 화면만 실행하며 현장 Ubuntu의 영속 DB나 실제 장비에 연결하지 않는다.
+
+```bash
+.venv/Scripts/python.exe scripts/preview.py start --port 8001 --field
+# 관리자: http://127.0.0.1:8001/admin
+# 토큰: runtime/preview-8001/credentials.json
+.venv/Scripts/python.exe scripts/preview.py stop --port 8001
+```
+
+### 현장 설정 화면의 개발 PC 검증 · 2026-10-22
+
+Python 자동시험 170개, TypeScript·웹 빌드, 실행 셸 3개의 문법 검사를 통과했다. 로컬 중앙 서버와 브라우저에서 고객·주문·작업·명령 0건, 중계 0/3, 장치 미연결, JPEG 5채널 수신 대기, 상품 10종·등록 재고 17개와 고객 주문 접수 대기를 확인했다. 기록은 `runtime/verification/field-regression.xml`, `runtime/verification/field-setup.json`에 남긴다. Ubuntu 4대 LAN·USB·카메라·실제 로봇 동작 검증 결과가 아니다.
+
+### 별도 모의 검증 — 현장 세팅에는 실행하지 않음
+
+**2026-10-22 변경:** 주문과 지도 이동을 함께 볼 때는 아래 `reference_v4` 설정을 사용한다. 같은 운반 회차는 A→B→인계로 직접 이동하고 인계 후 대기로 돌아온다. 이동은 한 번에 한 대이며, 정차한 로봇의 팔 작업과 다른 로봇의 이동은 병행한다. 기본 논리 MOCK과 독립 v3 경로 시험은 비교·회귀용으로 남긴다.
 
 모든 PC에서 동일한 Git 버전을 받는다. 중앙은 Python 3.11~3.13 및 Node 24.12 이상 24.x/pnpm 11을 사용한다. 모의 중계는 CPU·Python으로 실행한다.
 
@@ -29,6 +82,9 @@ pnpm --dir web build
 ```bash
 # 중앙 PC
 set -a; source runtime/distributed/central.env; set +a
+export SHOP_DEVICE_MODE=mock
+export SHOP_MOTION_BACKEND=reference_v4
+export SHOP_DB=runtime/reference-v4/shopping.db
 .venv/bin/python -m uvicorn server.api:create_app --factory --host 0.0.0.0 --port 8000 --workers 1
 ```
 
@@ -41,6 +97,57 @@ set -a; source runtime/distributed/gateway-a.env; set +a
 
 고객: `http://CENTRAL_LAN_IP:8000/shop`, 관제: `/admin`. 관리자 토큰은 중앙의 `central.env`에서 확인한다. 두 고객은 별도 브라우저 세션을 사용한다.
 
+`/api/health`의 `motion_backend`가 `reference_v4`인지 확인한다. 관리자 **Pinky 이동**에 두 로봇·후면 바구니·현재 경로·점유 구역·전송/수락/실행/정지 기록이 보인다. 첫 주문 전 **장비·구역**에서 A/B/C 연결을 확인한다. 이동은 주문에 따라 진행한다. `--auto`는 모의 팔 응답도 자동으로 진행하며, 생략하면 **모의 팔 작업 20단계**를 눌러 진행한다. 각 차수의 고객 장바구니 준비는 **관제 현황**에서 명시적으로 확인한다.
+
+한 PC에서 같은 서버·중계 3개를 확인하려면 아래 명령을 사용한다. 기존 8001 미리보기가 있으면 먼저 동일 명령의 `stop --port 8001`로 종료한다.
+
+```bash
+.venv/bin/python scripts/preview.py start --port 8001 --reference --auto
+# Windows: .venv/Scripts/python.exe 사용
+# http://127.0.0.1:8001/admin#motion
+# 관리자 토큰: runtime/preview-8001/credentials.json
+.venv/bin/python scripts/preview.py stop --port 8001
+```
+
+v4는 전용 DB를 사용하며 기존 DB를 자동 변환하지 않는다. 재시작 시 위치와 점유를 보존하고 복구 필요 상태로 멈춘다. **새 모의 실행**에서 가상 실행 폐기를 확인할 때만 초기화한다. 출발한 회차의 추가 주문은 다음 회차로 넘긴다. 다음 작업장이 사용 중이면 현재 적재장에서 대기한다. 출발 구역은 다음 작업장 도착 확인까지, 인계 구역은 대기 위치 복귀까지 보유한다. 빈 선두 로봇 때문에 후열 주문이 막히면 인계 구역에 잠시 양보한 뒤 후열로 돌아간다. 이 대기열 조정에서는 로봇팔·재고·고객 인계를 실행하지 않는다.
+
+### 장비 연결 전 준비 기준
+
+| 확인 | 준비 방법 / 남은 현장 입력 |
+|---|---|
+| 코드 일치 | 네 PC의 `git rev-parse HEAD` 비교. 로컬 미커밋 변경도 배포에 포함됐는지 확인 |
+| 내부망 | PC 4대 유선 LAN, Pinky 2대 같은 공유기 내부망. 중앙 IP 예약. 게스트 격리 사용하지 않음 |
+| 제어 연결 | 각 중계에서 `curl http://CENTRAL_LAN_IP:8000/api/health`. 인증 파일은 자기 중계 것만 전달 |
+| A/B | 팔·카메라 by-id, 캘리브레이션, YOLO 모델, Pinky별 3개 슬롯 자세 |
+| C | 팔·정면·그리퍼 카메라 by-id, 왼쪽 v2 5만·오른쪽 선정 모델, 정지·자세 유지 관측 |
+| Pinky | 실물 이동 어댑터, 저장 맵과 `layout-v4` 좌표 정합, 후진 주차 오차·관측 갱신·실제 정지 피드백. **현재 미제공/미검증** |
+| 영상 | 기존 MediaMTX 설정 적용 후 5채널 FPS·지연·ACT 주기 측정. 지도 위치를 카메라 측정 결과로 간주하지 않음 |
+
+전체 모의 검증:
+
+```bash
+.venv/bin/python -m pytest -q
+pnpm --dir web build
+.venv/bin/python scripts/demo_reference_orders.py
+.venv/bin/python scripts/demo_reference_faults.py
+```
+
+`demo_reference_orders.py`는 별도 서버와 중계 3개를 실행·종료한다. 두 고객의 총 8개 상품(한 고객 6개)을 3차례 운반하며 약 2~4분 제한으로 검사한다. 결과는 `runtime/verification/v4-orders-*/verification.json`에 기록한다. `demo_reference_faults.py`는 중지·실패·연결 끊김을 검사하고 같은 위치의 `v4-faults-*`에 기록한다. ROS·USB·카메라를 열지 않는다. LAN·영상 부하·후진 주차·실제 상품 이동은 Ubuntu PC와 장비 연결 후 검증한다.
+
+모의 정차 확인은 기존 개발 기본값인 300초 동안만 유효하다. 장바구니 준비를 오래 보류해 관측이 만료되면 복구 필요 상태로 멈춘다. 화면의 마지막 좌표를 계속 새 관측으로 재사용하지 않는다. 실물은 별도의 최신 정차 관측 공급과 허용 오차 검증이 필요하다.
+
+### 개발 PC 검증 결과 · 2026-10-22
+
+| 방법 | 결과 | 한계 |
+|---|---|---|
+| Python 회귀 검사 | 164개 통과. 고객 분리·3슬롯 다회 운반·v4 경로·중복·취소·관측 만료·재시작·권한 포함 | 합성 관측과 가상 시계 포함 |
+| Vue/TypeScript/Vite | 타입 검사·빌드 통과 | 현장 브라우저/망 지연 미측정 |
+| 별도 4프로세스 HTTP | 두 고객 8개 상품, 3회 운반, 이동 11개, 팔 작업/다른 Pinky 이동 병행 관찰 | 모의 팔·기준 경로 재생 |
+| HTTP 오류 주입 | 중지 요청/수신/모의 정지 구분, 이동 실패, 중계 종료 3개 통과. 점유와 예약 재고 보존 | 실물 정지 거리·토크 미검증 |
+| 브라우저 확인 | 두 Pinky·후면 바구니·점유·명령 기록, 장바구니 준비 화면 이동 확인 | 카메라 실측 위치가 아님 |
+
+로컬 기록: `runtime/verification/v4-regression.xml`, `v4-orders-20261022T063345809923Z/verification.json`, `v4-faults-20261022T063735938441Z/verification.json`. 생성 기록은 Git 제외이며 같은 검증 명령으로 현장에서 다시 생성한다. Git에는 이 실행 안내와 검증 코드가 포함된다.
+
 재고 초기값은 A 9종 각 1개·B 라이스칩 8개다. 주문 접수 시 예약하고 확인된 적재만 선반 재고에서 차감한다. 4~6개 주문은 고객에게 배정된 Pinky 1대가 3개씩 운반한다. 처음 3개 적재 후 고객이 주문을 마감하면 남은 차수까지 자동으로 왕복한다. 각 인계 차수에서 해당 고객 장바구니 준비를 확인해야 한다.
 
 새로고침·서버 재시작은 재고를 초기화하지 않는다. 구버전 DB는 기록을 보존하고 재고 확인 필요 상태로 막는다. 장비 없는 모의 시험에서는 관리자 ‘새 모의 실행’에서 이전 가상 실행 폐기를 명시적으로 확인하면 기록을 보관하고 17개로 시작한다. 이 동작은 실물 모드에서 사용할 수 없다.
@@ -52,7 +159,7 @@ bash scripts/verify_ubuntu.sh
 
 ## 2. 실물 설정 준비 — 이 단계에서는 장비가 움직이지 않음
 
-`config/hardware-yolo.example.json`을 A/B의 `runtime/hardware.json`으로, `config/hardware.example.json`을 C의 같은 경로로 복사해 현장 값을 입력한다. 예시 파일은 모두 `armed=false`, 미확인 값은 null이다.
+1번에서 생성한 각 `runtime/field/gateway-*.hardware.json`에 현장 값을 입력한다. A/B는 YOLO, C는 ACT 설정이다. 모두 `armed=false`, 미확인 값은 null로 시작한다. 아래 `runtime/hardware.json`을 사용하는 기존 상세 명령은 해당 중계의 실제 설정 경로로 바꿔 실행한다.
 
 - A/B: 현재 팔의 USB by-id, 카메라 by-id, 집기 설정·캘리·저장 자세 파일 경로를 입력한다. `drop_slots`에는 Pinky별 위치 0·1·2의 접근·놓기 자세 이름을 입력한다. 각각 다른 놓기 자세를 실제로 기록해야 한다. 접시 좌우는 재고 위치로 추가하지 않는다.
 - C: 교체된 팔·정면·그리퍼 카메라의 by-id, 보정 디렉터리, 실제 대기 자세 6축 값과 허용 오차, 상대 목표 제한을 입력한다. 옛 `/dev/omx_follower` 별칭을 재사용하지 않는다.
@@ -102,24 +209,29 @@ ACT 추론은 로컬 `get_observation()`의 RGB 정면·그리퍼 프레임을 �
 중앙의 로컬 `runtime/hardware-readiness.json`에 검증한 상품 SKU·하역 방향을 적고 승인한다. 예시 파일은 `config/hardware-readiness.example.json`이다. 실제 재고 시작값이 준비됐는지도 확인한다.
 
 ```bash
-# 중앙: 기존 모의 서버를 종료한 뒤 별도 DB로 실행
+# 중앙: 현장 설정 서버를 종료하고 검증 완료 후 별도 운영 DB로 실행
+set -a; source runtime/field/central.env; set +a
 export SHOP_DEVICE_MODE=hardware
+export SHOP_TEST_ONLY=0
+unset SHOP_MOTION_BACKEND
 export SHOP_GATEWAY_MODE=distributed
 export SHOP_DB=runtime/hardware/shopping.db
 export SHOP_HARDWARE_READINESS=runtime/hardware-readiness.json
 .venv/bin/python -m uvicorn server.api:create_app --factory --host 0.0.0.0 --port 8000 --workers 1
 
-# 각 중계: 담당 인증 환경과 장비 Python 환경에서 실행
-python -m robot_gateway.hardware.worker --config runtime/hardware.json --server "$SHOP_SERVER_URL" --execute
+# 각 중계: 진단 중계를 종료하고 담당 인증 환경과 장비 Python 환경에서 실행
+# B/C는 인증 파일을 각각 바꾼다.
+set -a; source runtime/field/gateway-a.env; set +a
+python -m robot_gateway.hardware.worker --config "$SHOP_HARDWARE_CONFIG" --server "$SHOP_SERVER_URL" --execute
 ```
 
 `--execute`와 `armed=true`가 함께 있어야 실물 실행 경로가 열린다. 모의 명령은 실제 실행부가 거부한다. 중계는 중앙 연결이 3초 이상 확인되지 않으면 새 정책/궤적 출력을 중단하도록 요청한다. 이 요청만으로 실제 정지를 보장하지 않으며 실제 정지 관측은 별도다. 이전 실물 작업·미전달 결과가 outbox에 남으면 자동 재실행하지 않는다.
 
 ## 6. 영상 연결
 
-기본 `config/video.json`은 가상 영상 5개다. 관제의 정지 화면·끊김·복구 버튼으로 표시를 시험한다. 영상 표시만으로 작업 상태가 바뀌지 않는다.
+현장 설정의 기본값은 `config/video-field.json`이며 5채널 모두 실제 JPEG 수신 대기다. 실제 프레임이 없으면 영상을 생성하지 않는다. `config/video.json`은 별도 모의 검증 전용이며 실물 모드에서 사용하면 서버 시작을 거부한다. 영상 표시만으로 작업 상태가 바뀌지 않는다.
 
-간단한 실카메라 확인은 로컬 영상 설정의 transport를 `jpeg`로 바꾸고 `SHOP_VIDEO_CONFIG`에 그 경로를 지정한다. 이 경로는 640px·5FPS 기본 미리보기이며 추론 원본 해상도는 바꾸지 않는다. 전경 JPEG에는 별도 `SHOP_OVERVIEW_TOKEN`을 중앙 서버와 전경 송신기에 동일하게 제공한다.
+간단한 실카메라 확인은 현장 JPEG 설정을 유지한다. 이 경로는 640px·5FPS 기본 미리보기이며 추론 원본 해상도는 바꾸지 않는다. 전경 JPEG에는 별도 `SHOP_OVERVIEW_TOKEN`을 중앙 서버와 전경 송신기에 동일하게 제공한다. 진단 전용 중계는 카메라를 열지 않으므로 실제 실행부/영상 송신기를 연결하기 전에는 수신 대기 상태가 유지된다.
 
 최종 유선 영상은 H.264/RTSP → MediaMTX → WebRTC 경로를 준비했다. 설치·실제 스트림·브라우저 호환성은 현장 시험 대상이다.
 
@@ -128,7 +240,7 @@ python -m robot_gateway.hardware.worker --config runtime/hardware.json --server 
 python scripts/prepare_media.py --host CENTRAL_LAN_IP --web-port 8000
 # 현장에 준비한 MediaMTX 실행 파일 사용
 mediamtx runtime/media/mediamtx.yml
-export SHOP_VIDEO_CONFIG=runtime/media/video.json
+# runtime/field/central.env의 SHOP_VIDEO_CONFIG를 runtime/media/video.json으로 수정 후 중앙 재시작
 ```
 
 생성된 `gateway-*.json`의 내용을 해당 중계 hardware.json의 `video`에 넣는다. 중앙의 `central.json`은 전경 송신용이다. 파일에 게시·조회 비밀번호가 있으므로 해당 PC에만 전달한다. 내부망에서 중앙 TCP 8000(웹/명령), 8554(RTSP), 8889(WHEP), UDP 8189(WebRTC)를 허용한다. 외부 포트포워딩은 필요 없다.
@@ -162,13 +274,8 @@ FFmpeg와 OpenCV가 필요하다. 프레임 전송은 별도 스레드이며 지
 실물은 기존 OMX 실험 프로그램과 해당 중계의 운영용 worker를 종료하고 연결 만료(10초) 후 전환한다. 시험용과 운영용 프로그램이 같은 팔·카메라를 동시에 열면 안 된다. 실물 시험 worker는 운영용 worker와 같은 프로세스 잠금 파일을 사용하고 중앙에서도 같은 중계의 중복 실행을 거부한다.
 
 ```bash
-# 중앙 PC: 기존 서버를 종료하고, 기존 중앙 인증 환경을 불러온 뒤 실행
-set -a; source runtime/distributed/central.env; set +a
-export SHOP_DEVICE_MODE=hardware
-export SHOP_GATEWAY_MODE=distributed
-export SHOP_TEST_ONLY=1
-export SHOP_DB=runtime/hardware-tests/shopping.db
-.venv/bin/python -m uvicorn server.api:create_app --factory --host 0.0.0.0 --port 8000 --workers 1
+# 중앙 PC: 1번 현장 설정 서버가 실행 중이면 추가로 띄우지 않는다.
+bash scripts/run_field_server.sh
 ```
 
 `SHOP_TEST_ONLY=1`은 일반 주문 실행을 막는다. 전체 시나리오의 Pinky/상품 검증 목록이 없어도 진단할 수 있지만 실물 동작의 `armed=true`와 `--execute`, 카메라·모델·자세 검사 조건은 유지한다. 기존 운영/모의 DB를 시험용으로 재사용하지 않는다.
@@ -176,9 +283,9 @@ export SHOP_DB=runtime/hardware-tests/shopping.db
 ```bash
 # 중계 A: 해당 장비의 기존 Python 환경, 저장소 루트
 # B/C는 node 이름과 인증 파일을 각각 바꾼다.
-set -a; source runtime/distributed/gateway-a.env; set +a
+set -a; source runtime/field/gateway-a.env; set +a
 python -m robot_gateway.test_runtime --node gateway-a --mode hardware \
-  --server "$SHOP_SERVER_URL" --config runtime/hardware.json
+  --server "$SHOP_SERVER_URL" --config "$SHOP_HARDWARE_CONFIG"
 ```
 
 위 명령은 장비를 열지 않고 통신·설정 검사만 제공한다. 모델·장치 설정이 없어도 누락 사유를 관제에서 볼 수 있다. 이 단계에선 `armed=false`를 유지해도 된다. 실제 동작 시험 준비 후 로컬 설정의 `armed=true`와 다음 옵션을 함께 사용한다.
@@ -186,7 +293,7 @@ python -m robot_gateway.test_runtime --node gateway-a --mode hardware \
 ```bash
 # 같은 프로그램의 진단 실행을 종료하고 재실행
 python -m robot_gateway.test_runtime --node gateway-a --mode hardware \
-  --server "$SHOP_SERVER_URL" --config runtime/hardware.json --execute
+  --server "$SHOP_SERVER_URL" --config "$SHOP_HARDWARE_CONFIG" --execute
 ```
 
 - A/B 적재: 선택한 Pinky 배치·슬롯 한 곳의 접근/놓기 자세부터 등록할 수 있다. 미등록 슬롯은 실행할 수 없다. 운영용 worker의 Pinky 어댑터·전체 3슬롯 검사는 그대로 유지된다. 시험은 상품 1개씩이며 고객 재고를 차감하지 않는다.
@@ -205,3 +312,18 @@ python -m robot_gateway.test_runtime --node gateway-a --mode hardware \
 ```
 
 운영 복귀 시 시험을 해제하고 시험 worker/서버를 종료한다. `unset SHOP_TEST_ONLY` 후 기존 운영용 DB·현장 검증 설정을 사용해 서버와 운영용 worker를 다시 실행한다. 실제 물리 장비·우분투 4대·영상 부하는 현장 시험 대상이다.
+
+## 9. Pinky 도로 v3 모의 이동
+
+1번의 모의 서버와 중계 A를 최신 코드로 실행하면 관리자 **Pinky 이동** 탭에서 사용할 수 있다. 경로·시험 로봇·배속을 선택해 요청하고, 지도에서 Pinky와 후면 바구니의 기준 위치를 확인한다. 추가 ROS·Isaac 설치는 필요하지 않다. 서로 다른 PC에서 실행하면 시계를 동기화한다.
+
+전송·수락·진행·도착·정지 상태를 구분한다. 중지 요청과 정지 확인도 별도다. 종료 후 시험을 해제해야 다음 이동 또는 주문을 시작할 수 있다. 실행 중 3초 관측 단절은 결과 불명으로 남기고 점유를 유지한다. 주문·고객 재고를 변경하지 않는다.
+
+각 v3 시험은 선택 경로 시작점에서 독립 실행된다. 주문 경로 연동은 위 v4 실행에서 제공하며, v4에서도 이동은 한 대로 제한한다. 표시 위치는 카메라 실측·실물 주행·Isaac 바퀴 물리 결과가 아니다. 실물 모드에서는 거부하며 OMX의 실물 동작 근거로 사용할 수 없다. [출처·좌표·조작·복구·검증 안내](robots/pinky/README.md)를 확인한다.
+
+```bash
+# 중앙 PC, 장비 미사용: 별도 서버·중계 프로세스 HTTP 검증
+.venv/bin/python scripts/demo_pinky_motion.py
+```
+
+개발 PC에서 경로 16개 기하 검사·HTTP 검증 5개 항목을 통과했다. Ubuntu 4대 LAN 실행은 현장에서 별도 검증한다.

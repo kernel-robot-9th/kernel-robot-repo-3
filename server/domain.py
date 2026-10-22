@@ -75,6 +75,8 @@ class Engine:
         require(mode in {"mock", "hardware"}, "장비 모드 오류", 422)
         self.mode, self.readiness = mode, readiness or {}
         self.test_only = test_only
+        self.receiver_epoch = uid()  # Monotonic receipt times never cross process restarts.
+        self.receiver_clock = time.monotonic
         if mode == "hardware":
             require(test_only or self.readiness.get("approved") is True, "현장 연결 검증 설정이 필요합니다")
             # Field adapters must continuously report parking/basket observations.
@@ -121,7 +123,7 @@ class Engine:
     def _recover(self):
         for job in self.state['device_tests']['jobs'].values():
             if job['status'] not in {'SUCCEEDED', 'FAILED', 'CANCELLED', 'WAIT_REVIEW'}:
-                job['status'] = 'UNCERTAIN' if job['kind'] in {'PICK', 'HANDOFF'} else 'FAILED'
+                job['status'] = 'UNCERTAIN' if job['kind'] in {'PICK', 'HANDOFF', 'NAVIGATE'} else 'FAILED'
                 job['stop_requested_at'] = job['stop_requested_at'] or self.clock()
         self.state['device_tests']['nodes'] = {}
         # Never invent current stock for an earlier checkpoint or a changed catalog.
@@ -378,16 +380,23 @@ class Engine:
         for zone_id, zone in self.state["zones"].items():
             if zone["owner"] or not zone["queue"]:
                 continue
-            task = self.state["tasks"][zone["queue"][0]]
+            task = next((self.state['tasks'][tid] for tid in zone['queue']
+                         if self._can_reserve_zone(self.state['tasks'][tid])), None)
+            if task is None:
+                continue
             session = self._session(task["session_id"])
             if session["error"]:
                 continue
             if not all(self.state["devices"][d]["connected"] for d in [task["robot_id"], task["device_id"]]):
                 continue
-            zone["owner"] = zone["queue"].pop(0)
+            zone['queue'].remove(task['id'])
+            zone["owner"] = task['id']
             task["state"] = "MOVING"
             self._command(task, "NAVIGATE", task["robot_id"])
             self._log("zone_reserved", {"zone_id": zone_id}, task=task)
+
+    def _can_reserve_zone(self, task):
+        return True
 
     def _fault(self, task, reason):
         session = self._session(task["session_id"])

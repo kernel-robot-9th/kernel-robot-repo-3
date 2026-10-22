@@ -27,7 +27,7 @@ if not path.exists():
         output.write('SHOP_DB=runtime/shopping.db\n')
     print('단일 중개 호환용 .env 생성. 이번 분산 실행에서는 이 파일을 사용하지 않습니다.')
 else:
-    print('기존 단일 중개용 .env 유지. 분산 실행에서는 runtime/distributed/ 설정을 사용합니다.')
+    print('기존 단일 중개용 .env 유지. 현장 설정에서는 runtime/field/ 설정을 사용합니다.')
 PY
-echo '설치 완료. bash scripts/verify_ubuntu.sh로 시험·웹 빌드를 진행하세요.'
-echo '분산 인증 파일은 README 순서에 따라 A에서 prepare_distributed.py로 별도 생성하세요.'
+echo '설치 완료. pnpm --dir web build로 웹을 빌드하세요.'
+echo '현장 인증 파일은 FIELD_SETUP.md 순서에 따라 관제 PC에서 prepare_field.py로 생성하세요.'

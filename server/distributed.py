@@ -26,6 +26,8 @@ class DistributedEngine(Engine):
         self.profiles = profiles()
         super().__init__(*args, **kwargs)
         require(self.state.get("gateway_mode") == "distributed", "단일 중개 DB와 분산 DB를 구분하세요")
+        require(('road' in self.state) == (getattr(self, 'motion_policy', None) == 'reference_v4'),
+                '논리 모의 실행과 v4 주문 이동 DB를 분리하세요')
 
     def _fresh(self):
         state = super()._fresh()
@@ -41,6 +43,9 @@ class DistributedEngine(Engine):
         return state
 
     def _recover(self):
+        if ('road' in self.state) != (getattr(self, 'motion_policy', None) == 'reference_v4'):
+            self.store.close()
+            require(False, '논리 모의 실행과 v4 주문 이동 DB를 분리하세요')
         require(self.state.get("gateway_mode") == "distributed", "단일 중개 DB와 분산 DB를 구분하세요")
         require({n: set(p["devices"]) for n, p in self.state.get("gateways", {}).items()} ==
                 {n: set(p["devices"]) for n, p in self.profiles.items()}, "기존 DB와 담당 장비 설정이 다릅니다")

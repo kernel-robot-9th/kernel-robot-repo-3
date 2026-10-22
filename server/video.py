@@ -9,6 +9,7 @@ import time
 from .domain import require
 
 VIDEO_PATH = Path(__file__).resolve().parents[1] / 'config' / 'video.json'
+FIELD_VIDEO_PATH = VIDEO_PATH.with_name('video-field.json')
 OWNERS = {'overview': 'central', 'load-a': 'gateway-a', 'load-b': 'gateway-b',
           'handoff-front': 'gateway-c', 'handoff-wrist': 'gateway-c'}
 

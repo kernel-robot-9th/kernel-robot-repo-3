@@ -1,0 +1,37 @@
+{
+  "package": "pinky-route-v3-20261022",
+  "route_version": 3,
+  "schema_version": 2,
+  "files": [
+    {
+      "path": "data/v3/layout.json",
+      "source_path": "config/layout.json",
+      "sha256": "9bdf1352cc9e50806bb3dbc41820e961bb80812bd837898ed1f9074f4e2e905f"
+    },
+    {
+      "path": "data/v3/route-graph.json",
+      "source_path": "evidence/routes/route-graph.json",
+      "sha256": "17e47c47efda60d876c39f91a4eb381e59de58942602bf64fa5b7c2568f0121d"
+    },
+    {
+      "path": "data/v3/routes.json",
+      "source_path": "evidence/routes/routes.json",
+      "sha256": "368992eb13abb503205626a2a79e8d7349ce645bce1df34552b21dbcf23b3be8"
+    },
+    {
+      "path": "geometry.py",
+      "source_path": "source/pinky_motion/geometry.py",
+      "sha256": "b20885810d9f3299fe8950ba422bb5bf1d2b2c789bab73bd2317e8e507cc1fdf"
+    },
+    {
+      "path": "route_paths.py",
+      "source_path": "source/pinky_motion/route_paths.py",
+      "sha256": "911ca58a2459991dcf0e4d25604c2f1ad097052ee11c0c3b65805cab0260c439"
+    },
+    {
+      "path": "route_validation.py",
+      "source_path": "source/pinky_motion/route_validation.py",
+      "sha256": "6f89237dbf51f9e85eb1bd6b0befa807c6a0958775d7aeaad694c84e8e1de329"
+    }
+  ]
+}

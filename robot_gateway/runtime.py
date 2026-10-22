@@ -40,11 +40,16 @@ def main():
     client = Client(args.server, token)
     from .test_agent import TestAgent
     trial = TestAgent(client, identity, path.with_name(path.stem + '-device-tests.json'))
+    motion = None
     offline = False
     print(f"{args.node} · MOCK · 실제 장비 연결 없음", flush=True)
     while True:
         try:
             hello = client.call("/api/nodes/heartbeat", identity)
+            if hello.get('motion_backend') == 'reference_path' and args.node == 'gateway-a':
+                if motion is None:
+                    motion = TestAgent(client, identity, path.with_name(path.stem + '-motion.json'), endpoint='/api/nodes/motion')
+                motion.tick()
             trial.tick()
             if hello["run_id"] != state["run_id"]:
                 state = {"run_id": hello["run_id"], "pending": None}

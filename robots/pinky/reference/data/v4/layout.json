@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "units": "metres, radians, seconds",
+  "frame": "layout: origin at back-left floor; +X right, +Y towards back wall, +Z up. Floor is X=[0,2], Y=[-1.5,0]. Not the saved ROS map frame.",
+  "geometry_source": "user statements through 2026-10-22",
+  "width": 2.0,
+  "depth": 1.5,
+  "station_depth": 0.75,
+  "station_widths": [
+    0.6,
+    0.6,
+    0.8
+  ],
+  "junction_wall_distances": [
+    0.43,
+    0.43,
+    0.42
+  ],
+  "arm_wall_distance": 0.14,
+  "arm_mount_height": 0.11,
+  "camera_wall_distance": 0.12,
+  "camera_height": 0.8,
+  "basket_width": 0.127,
+  "basket_length": 0.155,
+  "basket_height": 0.043,
+  "connection": "127mm side taped rigidly against robot rear; simulation treats basket as slightly raised with negligible floor resistance per user instruction on 2026-10-22",
+  "assumptions": {
+    "partition_thickness": 0.005,
+    "partition_height": 0.15,
+    "basket_wall": 0.003,
+    "basket_mass": 0.05,
+    "basket_ground_clearance": 0.005,
+    "basket_floor_contact": false,
+    "basket_friction": 0.25,
+    "floor_friction": 0.6,
+    "camera_lateral_offset": -0.16,
+    "camera_hfov_degrees": 70.0,
+    "shelf_width_depth": [
+      0.18,
+      0.2
+    ],
+    "wheel_drive_damping": 0.2,
+    "wheel_max_torque": 0.3
+  },
+  "interpretation": "Station widths are coordinate spans within total 2m; partitions centred at X=.6,1.2 reduce clear widths. Camera left in plan = arm right when facing aisle. Arm 11cm means mounting surface. Basket 5mm lift is an illustrative modelling choice, not a measurement; only basket-floor contact is excluded, obstacle collision and footprint retained. Assumptions are not measured.",
+  "sim_asset": {
+    "source_repo": "../shopping-robot-digital-twin",
+    "pinky": "assets/robots/pinky_pro/usd/pinky_pro/pinky_pro.usda",
+    "omx": "assets/robots/omx_f/usd/omx_f/omx_f.usda",
+    "rear_x": -0.0759777993,
+    "front_x": 0.0420500426,
+    "wheel_radius": 0.028,
+    "contact_track": 0.0971,
+    "notes": "Geometry from converted source; source sphere wheel collisions retained. Real encoder config uses radius .027 / separation .0961. Neither is a calibrated dynamics model. Rear X is asset bbox assumption, not a measured robot-frame-to-junction transform."
+  },
+  "simulation": {
+    "dt": 0.016666666666666666,
+    "ros_domain_id": 83,
+    "namespace": "/pinky_sim/pinky_1",
+    "command_timeout": 0.3
+  }
+}

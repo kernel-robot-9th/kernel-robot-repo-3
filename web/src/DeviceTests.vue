@@ -29,7 +29,7 @@ const pendingKey = 'shopping.test.pending'
 function savedPending(): Request | null { try { return JSON.parse(sessionStorage.getItem(pendingKey) || 'null') } catch { return null } }
 const pending = ref<Request | null>(savedPending())
 const report = computed(() => state.value?.nodes[node.value])
-const rows = computed(() => Object.values(state.value?.jobs || {}).filter(j => j.node_id === node.value).reverse())
+const rows = computed(() => Object.values(state.value?.jobs || {}).filter(j => j.node_id === node.value && j.kind !== 'NAVIGATE').reverse())
 const job = computed(() => state.value?.jobs[selected.value])
 const stock = computed(() => props.products.filter(p => p.station === (node.value === 'gateway-b' ? 'load-b' : 'load-a')))
 const motion = computed(() => kind.value === 'PICK' || kind.value === 'HANDOFF')

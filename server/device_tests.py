@@ -5,7 +5,7 @@ import json
 
 from .domain import atomic, require, uid, digest
 
-MOTION = {'PICK', 'HANDOFF'}
+MOTION = {'PICK', 'HANDOFF', 'NAVIGATE'}
 FINAL = {'SUCCEEDED', 'FAILED', 'CANCELLED'}
 DEVICES = {'gateway-a': ('omx-a', 'load-a'), 'gateway-b': ('omx-b', 'load-b'),
            'gateway-c': ('omx-handoff', 'handoff')}
@@ -46,6 +46,10 @@ class Bench:
                        distributed=self.e.state.get('gateway_mode') == 'distributed')
             for job in out['jobs'].values():
                 job.pop('events', None)
+                sample = job.get('telemetry')
+                if sample:
+                    sample['age_seconds'] = (max(0., self.e.receiver_clock() - sample['received_monotonic'])
+                                             if sample['receiver_epoch'] == self.e.receiver_epoch else None)
             for node, value in out['nodes'].items():
                 gateway = self.e.state.get('gateways', {}).get(node, {})
                 value['online'] = bool(gateway.get('connected') and gateway.get('instance_id') == value['instance_id']
@@ -68,6 +72,9 @@ class Bench:
         report = self.state['nodes'].get(node, {})
         gateway = self.e.state['gateways'][node]
         if kind in MOTION:
+            road = self.e.state.get('road', {})
+            require(not road.get('active') and not road.get('blocked'), '주문 이동 또는 이동 복구가 진행 중입니다')
+            require(kind != 'NAVIGATE' or not road, 'v4 주문 통합에서는 독립 v3 이동 시험을 실행하지 않습니다. 별도 기본 미리보기를 사용하세요')
             require(prepared is True, '고정 바구니·작업 영역 준비를 확인하세요')
             require(not self.state['hold'], '이전 동작 시험의 정지·원위치 확인이 필요합니다')
             require(not any(t['state'] not in {'DONE', 'CANCELLED'} for t in self.e.state['tasks'].values())
@@ -77,7 +84,10 @@ class Bench:
                     and self.e.clock() - report.get('at', 0) < 5, '시험 실행부의 최신 준비 상태가 필요합니다')
             require(report.get('allow_motion') is True, '동작 시험 실행부가 준비되지 않았습니다')
             require(kind in report.get('operations', []), '중계가 지원하지 않는 시험입니다')
-            if kind == 'PICK':
+            if kind == 'NAVIGATE':
+                from .motion_tests import validate_request
+                validate_request(self.e, node, parameters, report)
+            elif kind == 'PICK':
                 require(node != 'gateway-c' and set(parameters) == {'sku', 'slot', 'robot_id'}, '적재 시험 입력 오류', 422)
                 require(parameters['sku'] in self.e.products and self.e.products[parameters['sku']]['station'] == DEVICES[node][1], '해당 적재장의 상품을 선택하세요', 422)
                 require(type(parameters['slot']) is int and parameters['slot'] in (0, 1, 2)
@@ -101,6 +111,14 @@ class Bench:
                'stopped': None, 'review': None, 'released_at': None, 'observation': None,
                'result': None, 'timeline': [], 'events': {}}
         self.state['jobs'][jid] = job
+        if kind == 'NAVIGATE':
+            from robots.pinky.catalog import BACKEND, FRAME, VERSION, bundle, route
+            job.update(device_id=parameters['robot_id'], robot_id=parameters['robot_id'],
+                       task_id=jid, session_id=None, zone_id='reference-trial',
+                       backend=BACKEND, frame_id=FRAME, route_version=VERSION, source_hash=bundle()[3],
+                       receiver_epoch=self.e.receiver_epoch, created_monotonic=self.e.receiver_clock(),
+                       telemetry=None, telemetry_signature=None,
+                       timeout_seconds=route(parameters['route_id']).duration / parameters['rate'] + 30)
         if kind in MOTION:
             self.state['hold'] = jid
         self.log(job, 'CREATED', {'kind': kind, 'parameters': parameters, 'prepared_by_operator': prepared, 'simulate_failure': simulate_failure})
@@ -128,6 +146,16 @@ class Bench:
         job = self.job(jid)
         require(job['node_id'] == node and job['instance_id'] == instance, '다른 중계 또는 이전 실행의 시험입니다', 403)
         require(len(json.dumps(data)) <= 24000, '시험 결과가 너무 큽니다', 413)
+        if kind == 'PROGRESS':
+            require(job['kind'] == 'NAVIGATE' and job['mode'] == 'mock'
+                    and job['status'] == 'RUNNING', '현재 도로 모의 시험의 진행 보고가 아닙니다')
+            from .motion_tests import validate_sample
+            changed = validate_sample(self.e, job, data.get('sample'))
+            if changed and (job.get('progress_log_at') is None or self.e.clock() - job['progress_log_at'] >= 2):
+                job['progress_log_at'] = self.e.clock()
+                self.log(job, 'PROGRESS', {'pose': job['telemetry']['pose'], 'progress': job['telemetry']['progress'],
+                                         'source': job['backend'], 'sequence': job['telemetry']['sequence']})
+            return {'received': True, 'duplicate': not changed}
         signature = digest([kind, data])
         if event_id in job['events']:
             require(job['events'][event_id] == signature, '중복 결과 내용이 다릅니다')
@@ -139,6 +167,8 @@ class Bench:
         elif kind == 'STARTED':
             require(job['status'] == 'ACCEPTED' and not job['stop_requested_at'], '수락·중지 상태를 확인하세요')
             job.update(status='RUNNING', started_at=self.e.clock())
+            if job['kind'] == 'NAVIGATE':
+                job['started_monotonic'] = self.e.receiver_clock()
         elif kind == 'STOP_ACK':
             require(job['stop_requested_at'] is not None, '중지 요청이 없습니다')
             job['stop_ack_at'] = self.e.clock()
@@ -146,6 +176,25 @@ class Bench:
             require(job['status'] in {'RUNNING', 'UNCERTAIN', 'ACCEPTED'}
                     or (job['status'] == 'SENT' and kind == 'ERROR' and data.get('not_executed') is True), '실행 상태가 아닙니다')
             require(kind == 'ERROR' or job['started_at'] is not None, '실행 시작 확인 전에는 결과를 받을 수 없습니다')
+            if job['kind'] == 'NAVIGATE':
+                from .motion_tests import validate_sample
+                require(job['mode'] == 'mock', '실물 이동 결과로 사용할 수 없습니다')
+                if data.get('sample'):
+                    validate_sample(self.e, job, data['sample'])
+                    require(data['sample']['halted'] is True, '모의 실행부 정지 확인이 필요합니다')
+                    job['stopped'] = {'source': job['backend'], 'at': self.e.clock(), 'physical': False}
+                elif data.get('not_executed') is True and job['started_at'] is None:
+                    job['stopped'] = {'source': 'not_executed', 'at': self.e.clock(), 'physical': False}
+                if kind == 'FINISHED':
+                    require(job['status'] == 'RUNNING' and not job['stop_requested_at'] and data.get('outcome') == 'SUCCEEDED'
+                            and data.get('sample', {}).get('arrived') is True and job['stopped'],
+                            '시간 만료·중지·결과 불명은 이동 성공이 아닙니다')
+                job.update(ended_at=self.e.clock(), result={'kind': kind, 'data': deepcopy(data)},
+                           status=('SUCCEEDED' if kind == 'FINISHED' else
+                                   ('CANCELLED' if job['stop_requested_at'] else 'FAILED') if job['stopped'] else 'UNCERTAIN'))
+                job['events'][event_id] = signature
+                self.log(job, kind, data)
+                return {'received': True}
             job.update(ended_at=self.e.clock(), result={'kind': kind, 'data': deepcopy(data)},
                        status='WAIT_REVIEW' if job['kind'] in MOTION else ('SUCCEEDED' if kind == 'FINISHED' else 'FAILED'))
             stopped = data.get('stop_feedback', {})
@@ -217,10 +266,16 @@ class Bench:
             if job['status'] not in {'CREATED', 'SENT', 'ACCEPTED', 'RUNNING'}:
                 continue
             node = self.e.state.get('gateways', {}).get(job['node_id'], {})
-            expired = now - job['created_at'] > (210 if job['kind'] in MOTION else 15)
+            expired = now - job['created_at'] > job.get('timeout_seconds', 210 if job['kind'] in MOTION else 15)
             lost = job['sent_at'] is not None and (node.get('instance_id') != job['instance_id']
                     or not node.get('connected') or now - node.get('heartbeat_at', 0) > 10)
-            if expired or lost:
+            stale = False
+            if job['kind'] == 'NAVIGATE':
+                expired = (job['receiver_epoch'] != self.e.receiver_epoch or
+                           self.e.receiver_clock() - job['created_monotonic'] > job['timeout_seconds'])
+                stale = job['status'] == 'RUNNING' and self.e.receiver_clock() - (
+                    job.get('telemetry') or {}).get('received_monotonic', job['started_monotonic']) > 3
+            if expired or lost or stale:
                 job['status'] = 'UNCERTAIN' if job['kind'] in MOTION else 'FAILED'
                 job['stop_requested_at'] = job['stop_requested_at'] or now
                 self.log(job, 'TIMEOUT_OR_DISCONNECT', {'actual_stop_confirmed': False})

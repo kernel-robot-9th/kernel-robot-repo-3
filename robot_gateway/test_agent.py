@@ -101,9 +101,14 @@ class HardwareTrials:
 
 
 class TestAgent:
-    def __init__(self, client, identity, path, hardware=None, allow_mock_motion=True):
+    def __init__(self, client, identity, path, hardware=None, allow_mock_motion=True, endpoint='/api/nodes/device-tests'):
         self.client, self.identity, self.path = client, identity, Path(path)
+        self.endpoint = endpoint
         self.hardware, self.allow_mock_motion = hardware, allow_mock_motion
+        self.reference = None
+        if identity.get('mode', 'mock') == 'mock' and identity['node_id'] == 'gateway-a' and hardware is None:
+            from robots.pinky.simulator import ReferenceTrials
+            self.reference = ReferenceTrials()
         self.state = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {'job': None, 'pending': []}
         self.recovering = bool(self.state['job'] or self.state['pending'])
         self.pool = ThreadPoolExecutor(max_workers=1)
@@ -130,7 +135,7 @@ class TestAgent:
         while self.state['pending']:
             head = self.state['pending'][0]
             try:
-                self.client.call('/api/nodes/device-tests/events', head)
+                self.client.call(self.endpoint + '/events', head)
             except urllib.error.HTTPError as exc:
                 if exc.code == 409 and head['kind'] in {'ACCEPTED', 'STARTED'} and not self.state['job'].get('launched'):
                     self.state['pending'] = [p for p in self.state['pending'] if p['kind'] not in {'ACCEPTED', 'STARTED'}]
@@ -149,6 +154,11 @@ class TestAgent:
             'issues': [], 'checks': [], 'inspection': 'MOCK · 실제 장비·모델 미사용', 'python': platform.python_version()}
         if self.recovering:
             report.update(allow_motion=False, issues=[*report.get('issues', []), '이전 시험 결과 보존: 관제 복구 확인 필요'])
+        if self.reference:
+            from robots.pinky import compact, catalog
+            source = compact if self.endpoint == '/api/nodes/motion' else catalog
+            report.update(operations=[*report['operations'], 'NAVIGATE'], motion_backend=source.BACKEND,
+                          route_version=source.VERSION, source_hash=source.bundle()[3])
         return {**report, 'revision': revision()}
 
     def run(self, job):
@@ -159,6 +169,11 @@ class TestAgent:
                 return 'FINISHED', {'reply': 'PONG', 'node_id': self.identity['node_id'], 'python': platform.python_version(), 'revision': revision()}
             if job['kind'] == 'INSPECT':
                 return 'FINISHED', self.hardware.inspect() if self.hardware else self.profile()
+            if job['kind'] == 'NAVIGATE':
+                if not self.reference or job['mode'] != 'mock':
+                    raise RuntimeError('도로 모의 이동 실행부가 없습니다')
+                result = self.reference.execute(job, self.cancelled)
+                return ('FINISHED' if result['outcome'] == 'SUCCEEDED' else 'ERROR'), result
             if job['mode'] == 'hardware':
                 if not self.hardware:
                     raise RuntimeError('실물 실행부가 없습니다')
@@ -185,7 +200,7 @@ class TestAgent:
             return 'ERROR', data
 
     def tick(self):
-        value = self.client.call('/api/nodes/device-tests/poll', {**self.identity, 'profile': self.profile(),
+        value = self.client.call(self.endpoint + '/poll', {**self.identity, 'profile': self.profile(),
                                 'available': not self.recovering and self.future is None and self.state['job'] is None and not self.state['pending']})
         self.last_contact = time.monotonic()
         local = self.state['job']
@@ -247,6 +262,10 @@ class TestAgent:
             if job['stop_requested_at'] and not self.state['job'].get('stop_reported'):
                 self.state['job']['stop_reported'] = True
                 self.emit('STOP_ACK')
+            if self.reference and job['kind'] == 'NAVIGATE':
+                sample = self.reference.take()
+                if sample and job['status'] == 'RUNNING':
+                    self.emit('PROGRESS', {'sample': sample})
             if self.future is not None and self.future.done():
                 kind, data = self.future.result()
                 self.emit(kind, data)

@@ -12,7 +12,7 @@ const mediaAuth = (): Record<string, string> => props.feed.read_user ? { Authori
 async function frame() {
   try {
     const response = await fetch('/api/admin/video/' + props.feed.id + '/frame', { headers: auth(), signal: AbortSignal.timeout(3000) })
-    if (!response.ok) throw new Error(response.status === 401 ? '인증 필요' : '영상 수신 끊김')
+    if (!response.ok) throw new Error(response.status === 401 ? '인증 필요' : response.status === 503 && !received.value ? '첫 프레임 수신 대기 · 카메라 연결 확인 필요' : '영상 수신 끊김')
     const blob = await response.blob()
     if (!alive) return
     const previous = image.value; image.value = URL.createObjectURL(blob)
@@ -85,7 +85,7 @@ onUnmounted(() => { alive = false; if (timer) clearTimeout(timer); if (image.val
 </script>
 <template>
   <article class="panel video-tile">
-    <div class="section-title"><h2>{{ feed.label }}</h2><span class="pill">{{ feed.transport === 'mock' ? '가상 영상' : '카메라 영상' }}</span></div>
+    <div class="section-title"><h2>{{ feed.label }}</h2><span class="pill">{{ feed.transport === 'mock' ? '가상 영상' : received ? '카메라 영상' : '수신 대기' }}</span></div>
     <video v-if="feed.transport === 'webrtc'" ref="video" autoplay muted playsinline></video>
     <img v-else-if="image" :src="image" :alt="feed.label + ' 영상'" />
     <div v-else class="video-placeholder">영상 수신 대기</div>

@@ -1,0 +1,7 @@
+{
+  "overview": {"label": "전체 맵", "owner": "central", "transport": "jpeg"},
+  "load-a": {"label": "상차 A", "owner": "gateway-a", "transport": "jpeg"},
+  "load-b": {"label": "상차 B", "owner": "gateway-b", "transport": "jpeg"},
+  "handoff-front": {"label": "인계 · 정면", "owner": "gateway-c", "transport": "jpeg"},
+  "handoff-wrist": {"label": "인계 · 그리퍼", "owner": "gateway-c", "transport": "jpeg"}
+}

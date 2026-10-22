@@ -1,1 +1,4 @@
 * text=auto eol=lf
+# Reference payloads are byte-pinned to their source manifests.
+# Preserve original line endings so Linux checkouts pass SHA-256 validation.
+robots/pinky/reference/** -text whitespace=trailing-space,space-before-tab,cr-at-eol
