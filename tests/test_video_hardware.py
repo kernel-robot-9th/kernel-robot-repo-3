@@ -158,6 +158,18 @@ def test_act_stop_confirmation_uses_feedback_not_just_request(moving, torque, su
             arm.stopped({}, threading.Event())
 
 
+def test_act_standby_and_stop_tolerances_are_independent():
+    from robot_gateway.hardware.act import ActArm
+    arm = ActArm({
+        'standby_pose': {'joint': 10},
+        'standby_tolerance': 5,
+        'position_tolerance': .5,
+    }, None, None)
+    assert arm.at_standby({'joint.pos': 14.9})
+    assert not arm.at_standby({'joint.pos': 15.1})
+    assert arm.config['position_tolerance'] == .5
+
+
 def test_mock_checkpoint_cannot_be_opened_as_hardware(tmp_path):
     path = tmp_path / 'shopping.db'
     engine = Engine(path)

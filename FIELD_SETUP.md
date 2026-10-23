@@ -162,7 +162,7 @@ bash scripts/verify_ubuntu.sh
 1번에서 생성한 각 `runtime/field/gateway-*.hardware.json`에 현장 값을 입력한다. A/B는 YOLO, C는 ACT 설정이다. 모두 `armed=false`, 미확인 값은 null로 시작한다. 아래 `runtime/hardware.json`을 사용하는 기존 상세 명령은 해당 중계의 실제 설정 경로로 바꿔 실행한다.
 
 - A/B: 현재 팔의 USB by-id, 카메라 by-id, 집기 설정·캘리·저장 자세 파일 경로를 입력한다. `drop_slots`에는 Pinky별 위치 0·1·2의 접근·놓기 자세 이름을 입력한다. 각각 다른 놓기 자세를 실제로 기록해야 한다. 접시 좌우는 재고 위치로 추가하지 않는다.
-- C: 교체된 팔·정면·그리퍼 카메라의 by-id, 보정 디렉터리, 실제 대기 자세 6축 값과 허용 오차, 상대 목표 제한을 입력한다. 옛 `/dev/omx_follower` 별칭을 재사용하지 않는다.
+- C: 교체된 팔·정면·그리퍼 카메라의 by-id, 보정 디렉터리, 실제 대기 자세 6축 값, 대기 자세 근접 허용치 `standby_tolerance`, 실제 정지 허용치 `position_tolerance`, 상대 목표 제한을 입력한다. 두 허용치는 별도이며 대기 자세 오차를 넓혀도 정지 판정은 느슨해지지 않는다. 옛 `/dev/omx_follower` 별칭을 재사용하지 않는다.
 - C 왼쪽: `act-left-v2-050000`, 180초 제한, `n_action_steps=100`. 오른쪽은 null로 두며 선정한 체크포인트를 검증한 뒤 별도로 등록한다. 왼쪽 모델로 오른쪽을 대체하지 않는다.
 - A `mobile_factory`: 현장에서 성공한 Pinky 코드를 감싼 `모듈:팩토리함수`를 지정한다. 반환 객체는 `execute(command, cancelled)`를 제공하고 실제 결과만 반환해야 한다. NAVIGATE/LEAVE/STOP은 **프로젝트 내부 명령명**이며 ROS 명령명이 아니다. 정차·이탈·정지는 별도의 관측으로 확인한다. 현재 이 실제 어댑터는 미제공이다.
 

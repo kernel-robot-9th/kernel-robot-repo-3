@@ -13,6 +13,7 @@
     "calibration_dir": null,
     "max_relative_target": null,
     "standby_pose": null,
+    "standby_tolerance": null,
     "position_tolerance": null,
     "models": {
       "left": {"id": "act-left-v2-050000", "path": "~/omx_models/omx_left_act_v2/050000/pretrained_model"},

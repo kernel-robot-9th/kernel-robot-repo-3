@@ -42,7 +42,7 @@ def validate(config, *, check_files=True, require_mobile=True, check_slots=True)
         path('calibration_dir')
         if arm.get('front_by_id') == arm.get('wrist_by_id'):
             errors.append('front/wrist는 다른 장치여야 함')
-        for name in ('max_relative_target', 'position_tolerance'):
+        for name in ('max_relative_target', 'standby_tolerance', 'position_tolerance'):
             if type(arm.get(name)) not in (int, float) or not math.isfinite(arm[name]) or arm[name] <= 0:
                 errors.append(name + ': 현장 검증값 필요')
         if not isinstance(arm.get('standby_pose'), dict) or set(arm['standby_pose']) != JOINTS or not all(

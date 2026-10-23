@@ -53,6 +53,11 @@ class ActArm:
         if self.robot:
             self.robot.send_action({k + '.pos': v for k, v in self._pose().items()})
 
+    def at_standby(self, observation):
+        target = self.config['standby_pose']
+        tolerance = self.config['standby_tolerance']
+        return all(abs(observation[key + '.pos'] - value) <= tolerance for key, value in target.items())
+
     def execute(self, command, cancelled):
         with self.lock:
             self.load_policy(command)  # Missing right checkpoint fails before device connection.
@@ -75,8 +80,7 @@ class ActArm:
                         self.frames.offer('handoff-' + name, obs[name], 'RGB')
                     proof = self.evidence.read(command, 'handoff')
                     if proof and all(proof.get(k) is True for k in ('cart_visible', 'cart_empty', 'last_item_placed', 'standby_reached')):
-                        target, tolerance = self.config['standby_pose'], self.config['position_tolerance']
-                        if all(abs(obs[key + '.pos'] - value) <= tolerance for key, value in target.items()):
+                        if self.at_standby(obs):
                             if proof.get('confirmed_items') == command['items'] and proof.get('basket_id') == command['basket_id']:
                                 self.hold()
                                 return proof

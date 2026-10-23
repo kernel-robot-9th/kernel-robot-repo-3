@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "python": "/home/team2/venv/il/bin/python",
+  "robot": {
+    "id": "omx_follower_arm",
+    "port": "/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_1B8E02E050323952582E3120FF071F2E-if00",
+    "calibration_dir": "configs/calibration/follower",
+    "max_relative_target": 5.0
+  },
+  "leader": {
+    "id": "omx_leader_arm",
+    "port": "/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_E743255D50323952582E3120FF07301D-if00",
+    "calibration_dir": "configs/calibration/leader"
+  },
+  "cameras": {
+    "front": {
+      "path": "/dev/v4l/by-id/usb-HFSD-231214-J_SNAP_U2-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "view_confirmed": true
+    },
+    "wrist": {
+      "path": "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-720P_SN0001-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "view_confirmed": true
+    }
+  },
+  "baskets": {
+    "0": "OMX2 가까이에 있는 바구니",
+    "1": "OMX2에서 먼 쪽에 있는 바구니"
+  },
+  "recording": {
+    "fps": 30,
+    "episode_time_s": 45,
+    "max_camera_age_ms": 150,
+    "max_frame_gap_s": 0.2,
+    "minimum_rate_ratio": 0.9,
+    "repo_id": "local/omx3_pinky_all",
+    "root": "datasets/omx3_pinky_all"
+  }
+}
