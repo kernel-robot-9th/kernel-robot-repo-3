@@ -1,0 +1,92 @@
+diff --git a/dsr_common2/imp/DSR_ROBOT2.py b/dsr_common2/imp/DSR_ROBOT2.py
+index be854e8..8ec5e79 100755
+--- a/dsr_common2/imp/DSR_ROBOT2.py
++++ b/dsr_common2/imp/DSR_ROBOT2.py
+@@ -40,7 +40,7 @@ g_node = DR_init.__dsr__node
+ 
+ _robot_id    = DR_init.__dsr__id
+ _robot_model = DR_init.__dsr__model
+-_srv_name_prefix   = '' # _robot_id + '/' #ROS2  
++_srv_name_prefix   = 'dsr_controller2/' # 서비스/토픽이 /<namespace>/dsr_controller2/... 에 등록됨
+ _topic_name_prefix = _srv_name_prefix
+ 
+ print("_robot_id ={0}".format(_robot_id))
+@@ -101,7 +101,7 @@ _ros2_enable_alter_motion            = g_node.create_client(EnableAlterMotion,
+ _ros2_alter_motion                   = g_node.create_client(AlterMotion,                 _srv_name_prefix +"motion/alter_motion")
+ _ros2_disable_alter_motion           = g_node.create_client(DisableAlterMotion,          _srv_name_prefix +"motion/disable_alter_motion")
+ _ros2_set_singularity_handling       = g_node.create_client(SetSingularityHandling,      _srv_name_prefix +"motion/set_singularity_handling")
+-_ros2_set_singular_handling_force    = g_node.create_client(SetSingularityHandlingForce, _srv_name_prefix +"motion/set_singularity_handling_force")
++_ros2_set_singular_handling_force    = g_node.create_client(SetSingularHandlingForce, _srv_name_prefix +"motion/set_singularity_handling_force")
+ 
+ 
+ # Auxiliary Control Operations
+@@ -6666,7 +6666,7 @@ class CDsrRobot:
+         self._ros2_alter_motion                   = g_node.create_client(AlterMotion,                 self._srv_name_prefix +"/motion/alter_motion") ; self.req_AlterMotion = AlterMotion.Request()
+         self._ros2_disable_alter_motion           = g_node.create_client(DisableAlterMotion,          self._srv_name_prefix +"/motion/disable_alter_motion") ; self.req_DisableAlterMotion = DisableAlterMotion.Request()
+         self._ros2_set_singularity_handling       = g_node.create_client(SetSingularityHandling,      self._srv_name_prefix +"/motion/set_singularity_handling") ; self.req_SetSingularityHandling = SetSingularityHandling.Request()
+-        self._ros2_set_singular_handling_force    = g_node.create_client(SetSingularityHandlingForce, self._srv_name_prefix +"/motion/set_singularity_handling_force") ; self.req_SetSingularityHandlingForce = SetSingularityHandlingForce.Request()
++        self._ros2_set_singular_handling_force    = g_node.create_client(SetSingularHandlingForce, self._srv_name_prefix +"/motion/set_singularity_handling_force") ; self.req_SetSingularHandlingForce = SetSingularHandlingForce.Request()
+ 
+ 
+         # Auxiliary Control Operations
+diff --git a/dsr_controller2/config/dsr_controller2_gz.yaml b/dsr_controller2/config/dsr_controller2_gz.yaml
+index 4292710..5e42b58 100755
+--- a/dsr_controller2/config/dsr_controller2_gz.yaml
++++ b/dsr_controller2/config/dsr_controller2_gz.yaml
+@@ -1,7 +1,9 @@
+ /**:
+   controller_manager:
+     ros__parameters:
+-      update_rate: 10  # Hz
++      update_rate: 100  # Hz
++      # gz_ros2_control 의 위치->속도 P 게인. 기본값이 낮아 명령 위치에 도달하지 못한다
++      position_proportional_gain: 5.0
+ 
+       joint_state_broadcaster:
+         type: joint_state_broadcaster/JointStateBroadcaster
+@@ -9,6 +11,17 @@
+       dsr_position_controller:
+         type: forward_command_controller/ForwardCommandController
+ 
++      gripper_controller:
++        type: forward_command_controller/ForwardCommandController
++
++  # 단순 평행 집게. 0 = 벌림, 0.06 = 닫힘. 명령: [d, d]
++  gripper_controller:
++    ros__parameters:
++      joints:
++        - left_finger_joint
++        - right_finger_joint
++      interface_name: position
++
+   dsr_position_controller:
+     ros__parameters:
+       joints:
+diff --git a/dsr_description2/launch/dsr_description.launch.py b/dsr_description2/launch/dsr_description.launch.py
+index 010da80..5023f1b 100755
+--- a/dsr_description2/launch/dsr_description.launch.py
++++ b/dsr_description2/launch/dsr_description.launch.py
+@@ -59,8 +59,13 @@ ARGUMENTS = [
+         'color',
+         default_value='white',
+         description='Robot Color'
++    ),
++    DeclareLaunchArgument(
++        'gripper',
++        default_value='none',
++        description='Gripper (none|robotiq_2f85)'
+     )
+-    ]	
++    ]
+ 
+ def generate_launch_description():
+     
+@@ -86,7 +91,7 @@ def generate_launch_description():
+                                  name='robot_state_publisher',
+                                  output='both',
+                                  parameters=[{
+-                                    'robot_description': Command(['xacro', ' ', xacro_path, '/', LaunchConfiguration('model'), '.urdf.xacro color:=', LaunchConfiguration('color')])           
++                                    'robot_description': Command(['xacro', ' ', xacro_path, '/', LaunchConfiguration('model'), '.urdf.xacro color:=', LaunchConfiguration('color'), ' gripper:=', LaunchConfiguration('gripper')])
+                                  }])
+ 
+     joint_state_publisher_gui = Node(package='joint_state_publisher_gui',

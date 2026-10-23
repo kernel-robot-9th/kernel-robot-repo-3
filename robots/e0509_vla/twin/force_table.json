@@ -1,0 +1,17 @@
+{
+ "choco": {
+  "min_current": 60,
+  "recommended": 80,
+  "note": "2026-10-21 force test: 100/80/60 held (lift 5cm 3s + shake +-25mm x4 at 100mm/s, grip drop <= 6), 40 too slow to start closing (>8s) | 10-22: 130 crushed the box when gripped diagonally at far edge (closed 305) -> operate at 80"
+ },
+ "shrimp": {
+  "min_current": 100,
+  "recommended": 130,
+  "note": "2026-10-21 force test (lift 15cm + shake +-25mm x4 at 100mm/s, judged by eye): 100 held but bag slid in fingers (grip 403->54), 80 dropped. Gripper value unreliable for bag"
+ },
+ "ramen": {
+  "min_current": 40,
+  "recommended": 80,
+  "note": "2026-10-21 force test (upside-down cup, lift 5cm 3s + shake +-25mm x4 at 100mm/s): 80/60/40 all held (grip 489-502, drop <= 8), no crushing. True minimum may be below 40"
+ }
+}
