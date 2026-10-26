@@ -45,11 +45,12 @@ def sync_loop(pub):
             for _ in range(25): cap.read()   # 8 장이면 색 보정 전 사진이라 아무것도 못 찾음 (10-22)
             ok, f = cap.read(); cap.release()
             if not ok: continue
-            seen = {}
+            seen, allp = {}, {}
             for o in ENABLED:
                 xy = V.cam_locate(o, f, occl=occl)
                 seen[o] = None if xy is None else [round(float(xy[0]), 1), round(float(xy[1]), 1)]
-            m = String(); m.data = json.dumps({"event": "seen", "objects": seen, "t": time.time()}); pub.publish(m)
+                allp[o] = [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in V.cam_locate_all(o, f, occl=occl)]   # 10-23: 같은 상품 여러 개
+            m = String(); m.data = json.dumps({"event": "seen", "objects": seen, "all": allp, "t": time.time()}); pub.publish(m)
         except Exception as e:
             print("동기화 오류:", repr(e), flush=True)
 

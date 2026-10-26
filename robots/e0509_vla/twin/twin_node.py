@@ -76,9 +76,10 @@ class Twin(Node):
         self.grip = 750.0   # 서비스 기준 0=닫힘 750=열림
         self.create_subscription(JointState, "gripper/state", lambda m: setattr(self, "grip", float(m.position[0])) if m.position else None, 10)
         self.tf = Buffer(); TransformListener(self.tf, self)
-        self.parked = {o: [x, y, TABLE["z"]] for o, (x, y) in PARK.items()}   # 지금 다루지 않는 물건들의 마지막 자리
-        self.obj = "choco"; self.pos = list(self.parked["choco"]); self.held = False; self.in_basket = False
-        self.status = "IDLE"; self.alert = None; self.alert_t = 0.0; self.history = []; self.causes = []; self.miss = {}; self.seen_once = set()
+        # 지금 다루지 않는 물건들의 마지막 자리. 10-23: 켤 때 기본 자리(PARK)에 놓지 않는다(새우깡만 있는데 초코송이가 보임) -> 카메라로 본 것만 그림
+        self.parked = {o: None for o in PARK}
+        self.obj = "choco"; self.pos = None; self.held = False; self.in_basket = False
+        self.status = "IDLE"; self.alert = None; self.alert_t = 0.0; self.history = []; self.causes = []; self.miss = {}; self.seen_once = set(); self.extra = {}
         self.create_timer(0.1, self.draw)
 
     # ---- 이벤트 ----
@@ -91,7 +92,7 @@ class Twin(Node):
             self.obj = new; p0 = self.parked.get(new); self.pos = list(p0) if p0 else None; self.held = False; self.in_basket = False
         name = OBJ[self.obj]["name"]
         if k == "reset":
-            self.parked = {o: [x, y, TABLE["z"]] for o, (x, y) in PARK.items()}; self.pos = list(self.parked[self.obj])
+            self.parked = {o: None for o in PARK}; self.pos = None   # 10-23: 기본 자리 대신 비워 두고 카메라 동기화로 채움
             self.held = False; self.in_basket = False; self.status = "IDLE"; self.alert = None; self.causes = []; self.history = []
         elif k == "located":
             x, y = [v / 1000.0 for v in e["xy"]]; self.pos = [x, y, TABLE["z"]]; self.held = False; self.in_basket = False
@@ -111,6 +112,14 @@ class Twin(Node):
             self.history = list(e.get("history", [])); self.bad = True
             self.raise_alert("STOPPED", f"{name} retry loop stopped ({e.get('reason', '?')}), check terminal", e)
         elif k == "seen":   # 10-22: 주문 서버가 쉬는 동안 카메라로 본 작업대 위 물건들 (트윈을 실제에 맞춤)
+            # 10-23: 같은 상품이 여러 개면 대표 1개(아래 규칙) 말고 나머지를 self.extra 에 따로 그린다
+            for o, lst in e.get("all", {}).items():
+                if o not in OBJ: continue
+                pts = [[p[0] / 1000.0, p[1] / 1000.0, TABLE["z"]] for p in lst]
+                if not (o == self.obj and self.held) and pts:
+                    first = e.get("objects", {}).get(o)
+                    if first: pts = [p for p in pts if math.hypot(p[0] - first[0] / 1000.0, p[1] - first[1] / 1000.0) > 0.03]
+                self.extra[o] = pts
             for o, xy in e.get("objects", {}).items():
                 if o not in OBJ or (o == self.obj and self.held): continue
                 cur = self.pos if o == self.obj else self.parked.get(o)
@@ -271,6 +280,17 @@ class Twin(Node):
                 m.scale.x = m.scale.y = m.scale.z = 1.0; arr.markers.append(m)
             else:
                 d = self.mk(20 + idx, Marker.MESH_RESOURCE, "object"); d.action = Marker.DELETE; arr.markers.append(d)
+        for idx, name in enumerate(OBJ):   # 10-23: 같은 상품 추가분 (상품당 최대 3개 더)
+            o = OBJ[name]; sz = o["size"][2]; ex = self.extra.get(name, [])
+            for kx in range(3):
+                mid = 60 + idx * 3 + kx
+                if kx < len(ex):
+                    p = ex[kx]; m = self.mk(mid, Marker.MESH_RESOURCE, "object"); m.mesh_resource = OBJ_MESH + name + ".dae"
+                    m.mesh_use_embedded_materials = True; m.color.r = m.color.g = m.color.b = m.color.a = 0.0
+                    m.pose.position.x, m.pose.position.y, m.pose.position.z = float(p[0]), float(p[1]), float(p[2] + sz / 2)
+                    m.scale.x = m.scale.y = m.scale.z = 1.0; arr.markers.append(m)
+                else:
+                    d = self.mk(mid, Marker.MESH_RESOURCE, "object"); d.action = Marker.DELETE; arr.markers.append(d)
         d = self.mk(20, Marker.CUBE); d.action = Marker.DELETE; arr.markers.append(d)   # 예전 상자 지우기
         try:
             T6 = _tf_to_mat(self.tf.lookup_transform(FRAME, "link_6", rclpy.time.Time()).transform)
