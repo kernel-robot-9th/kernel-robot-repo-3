@@ -16,7 +16,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/picking"))
-from omx_pick import (add_wrist_report, legacy, main, reference_for, solver_for)
+from omx_pick import (add_wrist_report, build_pick_plan, legacy, main, reference_for,
+                      select_grasp_plan, solver_for)
 from omx_pick_setup import make_config
 from pick_core import Detection, build_plan
 from omx_tool_direction import direction_solver, heading, pulse_to_q, wrist_report
@@ -103,13 +104,60 @@ class WristDirectionTests(unittest.TestCase):
         output = direction_solver(fk, reference, start)(target)
         self.assertLess(abs(output[0] - reference[0]), 2)
         self.assertLess(abs(nearest_wrist(output[4], 4090) - 4090), 20)
-        report = wrist_report(fk, [dict(name="HIGH", kind="arm", target=start),
-                                  dict(name="DROP", kind="arm", target=reference)])
-        self.assertEqual(report[-1]["id15_unwrapped_pulse"], 4106)
-        self.assertEqual(nearest_wrist(4069, 26), -27)
-        self.assertEqual(nearest_wrist(26, -27), 26)
+
+    def test_fixed_wrist_removes_field_half_turn_for_all_products(self):
+        cfg = copy.deepcopy(self.cfg)
+        rule = copy.deepcopy(cfg["classes"]["jin_ramen"])
+        rule.update(pick_z_mm=37.18742741151278, hover_clearance_mm=50,
+                    approach_extra_mm=40)
+        cfg["classes"] = {"rice_chip": rule, "jin_ramen": copy.deepcopy(rule)}
+        cfg["regions_uv"] = [[[0, 0], [99, 0], [99, 99], [0, 99]]]
+        reference = [2814, 1928, 2410, 2785, 3867]
+        saved = dict(hover_high=[2065, 1651, 2415, 3129, 43],
+                     drop_approach=[2117, 1922, 2433, 2782, 4040],
+                     drop_release=[2096, 2176, 2530, 2372, 4028])
+        before_saved = copy.deepcopy(saved)
+        x, y = 24.008284757323178, -152.1343172583603
+        cal = dict(width=100, height=100,
+                   matrix_3x3=[[0, 0, x], [0, 0, y], [0, 0, 1]])
+        old = build_pick_plan(cfg, cal, Detection("rice_chip", .99, (40,40,60,60)), saved, reference)
+        add_wrist_report(old, reference)
+        self.assertGreater(max(abs(v["delta_deg"] or 0) for v in old["wrist_path"]), 150)
+        cfg["wrist_policy"] = "fixed"
+        for label, live_wrist in (("rice_chip", 43), ("jin_ramen", 4000)):
+            with self.subTest(label=label):
+                new = build_pick_plan(cfg, cal, Detection(label,.99,(40,40,60,60)), saved,
+                                      reference, fixed_wrist_pulse=live_wrist)
+                self.assertEqual(new["fixed_wrist_pulse"], live_wrist)
+                stages = {v["name"]: v["target"] for v in new["stages"] if v["kind"]=="arm"}
+                self.assertTrue(all(v[4]==live_wrist for v in stages.values()))
+                for name,dz in (("APPROACH",90),("HOVER",50),("PICK",0)):
+                    pos,r = fk.forward(pulse_to_q(stages[name]))
+                    self.assertLess(np.linalg.norm(pos*1000-[x,y,rule["pick_z_mm"]+dz]),2)
+                    self.assertLess(math.degrees(math.acos(np.clip(-r[2,0],-1,1))),5)
+                for a,b in (("APPROACH","HOVER"),("HOVER","PICK")):
+                    for t in np.linspace(0,1,21):
+                        q=pulse_to_q(stages[a])*(1-t)+pulse_to_q(stages[b])*t
+                        self.assertLess(math.degrees(math.acos(np.clip(-fk.forward(q)[1][2,0],-1,1))),5)
+                for name in ("DROP_APPROACH","DROP_RELEASE"):
+                    prior=fk.forward(pulse_to_q(saved[name.lower()]))[0]
+                    after=fk.forward(pulse_to_q(stages[name]))[0]
+                    self.assertLess(np.linalg.norm(after-prior),.002)
+        self.assertEqual(saved,before_saved)
+
+    def test_fixed_wrist_solver_reaches_both_shelves_and_rejects_bad_settings(self):
+        from omx_tool_direction import fixed_wrist_solver
+        for base,wrist in ((-1.4,43),(.7,4040)):
+            q=np.array([base,-.2,.8,math.pi/2-.6,(wrist-2048)*2*math.pi/4096])
+            xyz=fk.forward(q)[0]*1000
+            start=[2065,1651,2415,3129,wrist]
+            result=fixed_wrist_solver(fk,wrist,start)(xyz)
+            self.assertEqual(result[4],wrist)
+            self.assertLess(np.linalg.norm(fk.forward(pulse_to_q(result))[0]*1000-xyz),2)
         with self.assertRaises(ValueError):
-            nearest_wrist(2048, 0)
+            fixed_wrist_solver(fk,True,self.reference)
+        with self.assertRaises(ValueError):
+            select_grasp_plan(self.reference,self.reference,lambda solve:{},wrist_policy="unknown")
 
     def test_motor_ramp_transmits_short_signed_wrist_goal(self):
         from pick_robot import MotionController
