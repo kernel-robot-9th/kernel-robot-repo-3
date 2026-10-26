@@ -65,9 +65,10 @@ def near_gripper(obj, frame):
             b = find_box(frame); return b is not None and b[1] < 175 and abs(b[0] - 335) < 90
     except Exception: return False
     return False
+DRINK_SPOT, DRINK_R, DRINK_ZMIN = (346.0, 150.2), 120.0, 480.0   # 10-26: 게토레이는 1번 칸에 세워 두고 마지막에 처리 -> 그 둘레 12cm 는 z480 아래로 못 지나감
 LOOK = (430.0, 250.0, 450.0)   # 10-22 오후: 바구니 쪽(x400 y-350)으로 왔다 가는 게 헛걸음처럼 보임(사용자) -> 작업대 오른쪽 바깥. 경로 조작성 0.051 이상(random_area_check 로 계산)
 _LOOK_OLD = (400.0, -350.0, 450.0)   # 10-22: 팔을 비켜 작업대 전체를 보는 자세(수집 때 매번 오가던 바구니 쪽 대기 자세). 그리퍼가 작업대 밖
-def cam_locate(obj, frame, occl=True):
+def cam_locate(obj, frame, occl=True, px_out=None):
     """시작 자세 위 카메라 사진에서 물체 위치(책상 좌표 mm). 못 찾으면 None.
     초코송이: 노란 상자 + 초코송이 120편으로 맞춘 2차식 / 새우깡: 빨간 봉지 + 새우깡 56편으로 맞춘 1차식(오차 중앙값 12mm)"""
     if obj == "choco":
@@ -77,15 +78,18 @@ def cam_locate(obj, frame, occl=True):
         from ramen_vision import find_cup
         cup = find_cup(frame, start_pose=occl)
         from bag_vision import bag_region, set_object
-        set_object("shrimp"); bag = bag_region(frame)
-        if bag is not None:
-            frame = frame.copy(); frame[cv2.dilate(bag[0], np.ones((31, 31), np.uint8)) > 0] = 0
+        set_object("shrimp"); frame = frame.copy()
+        for _ in range(3):   # 10-23: 새우깡 봉지가 2개 이상이면 모두 가린다
+            bag = bag_region(frame)
+            if bag is None: break
+            frame[cv2.dilate(bag[0], np.ones((31, 31), np.uint8)) > 0] = 0
         # 10-22: 거꾸로 세운 컵라면의 노란 몸통을 초코송이로 봄(바구니에 넣었는데 적재 실패 -> 컵라면 위로 내려가다 축2 충돌). 컵 둘레도 가린다
         if cup is not None:
             frame = frame.copy(); cv2.circle(frame, (int(cup[0]), int(cup[1])), 60, (0, 0, 0), -1)
         br = find_box(frame)
         if br is None: return None
         W = np.array(json.loads((HERE / "cam_choco_pix2xy.json").read_text())); px, py = br[0], br[1]
+        if px_out is not None: px_out[:] = [px, py]
         return np.r_[px, py, px * py, px ** 2, py ** 2, 1.0] @ W
     if obj == "ramen":
         # 검은 테이프 동그라미 -> 컵라면 수집 29편으로 맞춘 2차식(cam_ramen_fit.py, 한 편 빼고 오차 중앙값 6mm)
@@ -95,6 +99,7 @@ def cam_locate(obj, frame, occl=True):
         # 10-22: 위쪽 전체(py<175)를 막으니 그리퍼와 안 겹친 1번 칸 컵도 버림 -> 그리퍼 바로 아래(위쪽 가운데)만 막음
         if c is None or (occl and c[1] < 175 and abs(c[0] - 335) < 75): return None   # occl: 팔이 시작 자세일 때만
         W = np.array(json.loads((HERE / "cam_ramen_pix2xy.json").read_text())); px, py = c[0], c[1]
+        if px_out is not None: px_out[:] = [px, py]
         return np.r_[px, py, px * py, px ** 2, py ** 2, 1.0] @ W
     from bag_vision import bag_region, set_object
     from choco_vision import ROI
@@ -102,7 +107,18 @@ def cam_locate(obj, frame, occl=True):
     set_object("shrimp"); br = bag_region(f2)
     if br is None: return None
     W = np.array(json.loads((HERE / "cam_pix2xy.json").read_text()))
+    if px_out is not None: px_out[:] = [br[2][0], br[2][1]]
     return np.r_[br[2], 1.0] @ W
+
+_ERASE_PX = {"shrimp": 80, "choco": 55, "ramen": 60}
+def cam_locate_all(obj, frame, occl=True, n=3):
+    """10-23: 같은 상품이 여러 개일 때 모두 찾기(트윈 표시용). 찾은 자리를 흰색(작업대 색)으로 지우고 다시 찾는다."""
+    f2 = frame.copy(); out = []
+    for _ in range(n):
+        p = []; xy = cam_locate(obj, f2, occl=occl, px_out=p)
+        if xy is None or not p: break
+        out.append(xy); cv2.circle(f2, (int(p[0]), int(p[1])), _ERASE_PX.get(obj, 60), (255, 255, 255), -1)
+    return out
 
 OBJ_Z = 0.0   # 물체별 잡는 높이 추가분 (--object 로 정해짐, collect.py OBJECTS 와 같게)
 def grasp_floor(x, y):
@@ -278,6 +294,8 @@ def main():
             pt_ = p0 + (target - p0) * t_
             if pt_[2] < 430.0 and 150.0 <= pt_[0] <= 560.0 and -680.0 <= pt_[1] <= -330.0:
                 raise Stop(f"{name}: 경로가 바구니 위를 낮게 지남 (x{pt_[0]:.0f} y{pt_[1]:.0f} z{pt_[2]:.0f}) -> 거부")
+            if pt_[2] < DRINK_ZMIN and math.hypot(pt_[0] - DRINK_SPOT[0], pt_[1] - DRINK_SPOT[1]) < DRINK_R:
+                raise Stop(f"{name}: 경로가 1번 칸(게토레이 자리) 옆을 낮게 지남 (x{pt_[0]:.0f} y{pt_[1]:.0f} z{pt_[2]:.0f}) -> 거부")
         check_path(q0, p0, target)
         seg = target - p0; L = float(np.linalg.norm(seg)); t0 = time.monotonic(); maxdev = 0.0
         amovel(posx(list(target) + ORI), vel=[v, 30.0], acc=[2 * v, 60.0], ref=DR_BASE)
@@ -394,6 +412,11 @@ def main():
             if not okv: return
             cv2.imwrite(str(run / "c99_after_release.jpg"), fv)
             xy = cam_locate(a.object, fv, occl=False)   # 팔이 바구니 위라 작업대를 안 가림
+            if xy is not None and cam_xy is not None and float(np.hypot(*(np.asarray(xy) - np.asarray(cam_xy)))) > 60.0:
+                # 10-23: 새우깡 2개 놓고 1개 주문 -> 집어 담은 뒤 '다른' 봉지를 보고 적재 실패로 판단해 두 번째 봉지까지 집으러 감.
+                # 집은 자리(카메라로 처음 본 위치)에서 6cm 넘게 떨어진 같은 상품은 다른 재고로 본다
+                print(f"     놓은 뒤 처음 집은 자리(x{cam_xy[0]:.0f} y{cam_xy[1]:.0f})는 비었음. x{xy[0]:.0f} y{xy[1]:.0f} 의 {a.object} 는 다른 재고 -> 적재 완료로 봄", flush=True)
+                emit("loaded"); return
             if xy is not None:
                 print(f"     !! 놓은 뒤 작업대 위 x{xy[0]:.0f} y{xy[1]:.0f} 에 {a.object} 가 보임 -> 적재 실패", flush=True)
                 log({"not_in_basket": xy.tolist()}); emit("not_in_basket", xy=xy)
@@ -418,11 +441,12 @@ def main():
                     # 바구니 쪽이면 높이 유지한 채 시작 자세로 먼저 (시작 자세 -> 비킨 자리는 조작성 0.058)
                     go(list(START), 50.0, "바구니에서빠지기")
                     cur0 = FKC.fk(fresh_q())[0]
-                if cur0[2] < LOOK[2] - 1.0: go([cur0[0], cur0[1], LOOK[2]], 40.0, "비켜보기상승")
-                go(list(LOOK), 50.0, "비켜서보기"); spin_for(0.5)
+                go([cur0[0], cur0[1], DRINK_ZMIN], 40.0, "비켜보기상승")   # 10-26: 1번 칸 게토레이 옆을 지나가므로 z480 으로
+                go([LOOK[0], LOOK[1], DRINK_ZMIN], 50.0, "비켜보기이동"); go(list(LOOK), 30.0, "비켜서보기"); spin_for(0.5)
                 for _ in range(6): cap.grab()
                 ok0, f0 = cap.read()
                 cam_xy = cam_locate(a.object, f0, occl=False) if ok0 else None
+                go([LOOK[0], LOOK[1], DRINK_ZMIN], 30.0, "비킨자리상승"); go([START[0], START[1], DRINK_ZMIN], 50.0, "시작자세위로"); go(list(START), 30.0, "시작자세로")   # 10-26: 1번 칸 옆을 높게 지나 돌아옴
             if cam_xy is None:
                 # 2026-10-21: 작업대가 비어 있는데도 정책이 내려가 빈손으로 닫음 -> 카메라가 못 찾으면 출발하지 않는다
                 if ok0: cv2.imwrite(str(run / "c00_notfound.jpg"), f0)   # 10-22 못 찾은 사진도 남김
@@ -442,6 +466,20 @@ def main():
                 okg = okg and BOUNDS_X[0] <= hover[0] <= BOUNDS_X[1] and BOUNDS_Y[0] <= hover[1] <= BOUNDS_Y[1]
                 if not okg:
                     raise Stop(f"상자 위치 x{hover[0]:.0f} y{hover[1]:.0f} 는 팔이 안전하게 집고 바구니까지 갈 수 없는 곳(수집 범위 밖). 작업대 안쪽으로 옮겨 주세요")
+                try:   # 10-26: 서 있는 게토레이(키 32cm) 옆으로 낮게 지나가다 충돌 -> 시작 자세~물건 위 경로 15cm 안에 서 있으면 출발 안 함
+                    from gatorade_vision import find_bottle as _fb
+                    _r = _fb(f0)
+                    if _r is not None and _r["cap_area"] >= 260:
+                        _P = json.loads((HERE / "cam_pose.json").read_text()); _K = np.array(_P["K"]); _D = np.array(_P["dist"])
+                        _R, _ = cv2.Rodrigues(np.array(_P["rvec"])); _C = -_R.T @ np.array(_P["tvec"])
+                        _u = cv2.undistortPoints(np.array([[_r["cap_px"]]], np.float64), _K, _D).ravel(); _d = _R.T @ np.array([_u[0], _u[1], 1.0])
+                        _B = (_C + (315.0 - _C[2]) / _d[2] * _d)[:2]
+                        _a, _b = np.array(START[:2]), np.array(hover[:2]); _t = float(np.clip(np.dot(_B - _a, _b - _a) / max(np.dot(_b - _a, _b - _a), 1e-6), 0, 1))
+                        _dist = float(np.linalg.norm(_B - (_a + _t * (_b - _a))))
+                        if _dist < 150.0 and math.hypot(_B[0] - DRINK_SPOT[0], _B[1] - DRINK_SPOT[1]) > 60.0:
+                            raise Stop(f"서 있는 게토레이(x{_B[0]:.0f} y{_B[1]:.0f})가 {a.object} 가는 길 {_dist:.0f}mm 옆에 있음 -> 게토레이를 먼저 담거나 눕혀 주세요")
+                except Stop: raise
+                except Exception as _ex: print("     (서 있는 병 검사 실패)", _ex, flush=True)
                 if clear_view or FKC.fk(fresh_q())[0][1] < -300.0:
                     # 10-22 사고: 바구니 위에서 찍고 먼 물건(x669)으로 가려고 그 자리에서 z300 으로 내려가 손가락이 바구니 안에 들어가 바구니를 끌고 감(비상정지).
                     # 바구니 쪽이면 높이를 유지한 채 시작 자세로 먼저 빠져나온다
@@ -457,6 +495,12 @@ def main():
                     print(f"     카메라 위치 x{tgt[0]:.0f} y{tgt[1]:.0f} 에서 바로 잡기 (z{gz:.0f})", flush=True)
                     safe_target(tgt); go(tgt, V_MIN + 20.0, "카메라잡기하강")
                     pos = close_gripper(); closed = True
+                    if False and a.object == "shrimp" and pos > 250.0:   # 10-23 오후 끔: 새(빵빵한) 봉지는 잘 잡아도 300~430 -> 잘 잡은 걸 열었다 다시 쥠(사용자). 빠짐은 아래 천천히 들기로만 판정
+                        # 10-23: 봉지 볼록한 가운데에 막혀 350~423 에서 멈춘 걸 '다 닫힘'으로 보고 들어 올림 -> 올라가며 봉지가 빠지고 손가락이 그제야 끝까지 닫힘(2번).
+                        # 같은 높이에서 한 번 열었다가 다시 쥔다 (아래로는 안 감)
+                        print(f"     봉지 가운데에 막혀 덜 닫힘({pos:.0f}) -> 같은 자리에서 열었다가 다시 쥠", flush=True)
+                        log({"regrip_from": pos}); gripper_cmd(750, 200); gripper_wait(timeout=12.0); spin_for(0.5)
+                        pos = close_gripper()
                     print(f"     닫힘 위치 {pos:.0f}", flush=True); log({"close_at": tgt.tolist(), "closed_pos": pos, "cam_grasp": True})
                     if pos >= GRIP_OPEN_OK or (pos <= GRIP_EMPTY and a.object != "shrimp"):
                         emit("grasp_failed", xyz=tgt, closed_pos=pos)
@@ -464,6 +508,15 @@ def main():
                     if pos <= GRIP_EMPTY:   # 10-22: 납작한 봉지는 물고 있어도 11~20 -> 빈손 판정 안 하고 운반, 놓은 뒤 카메라로 확인
                         print(f"     새우깡 봉지가 얇아 그리퍼 값({pos:.0f})으로는 빈손인지 모름 -> 운반 후 카메라로 확인", flush=True)
                     emit("grasped", xyz=tgt, closed_pos=pos)
+                    if a.object == "shrimp":
+                        # 10-23: 처음 4cm 는 천천히 들고 그리퍼를 본다. 그사이 끝까지 닫혀 버렸으면 봉지가 빠진 것 -> 위로만 빠지고 다시 시도
+                        g0 = grip(); go([tgt[0], tgt[1], tgt[2] + 40.0], 15.0, "천천히들기"); spin_for(0.6); g1 = grip()
+                        print(f"     4cm 든 뒤 그리퍼 {g0:.0f} -> {g1:.0f}", flush=True); log({"slow_lift_grip": [g0, g1]})
+                        if g0 > 150.0 and g1 <= GRIP_EMPTY + 15.0:
+                            cur_s = FKC.fk(fresh_q())[0]
+                            print("     !! 드는 사이 봉지가 빠지며 손가락이 끝까지 닫힘 -> 위로 빠지고 다시 시도", flush=True)
+                            emit("grasp_failed", xyz=cur_s, closed_pos=g1)
+                            go([cur_s[0], cur_s[1], 300.0 if cur_s[0] > 600.0 else max(cur_s[2] + 150.0, 300.0)], 30.0, "빠짐상승"); raise Stop("들어 올리는 중 봉지가 빠짐 -> 위로 빠지고 멈춤")
                 if a.force_test is not None:
                     # 힘 측정 시험 (2026-10-21): 카메라 위치에서 수직으로 내려가 쥐고, 5cm 들어 3초 버틴 뒤 좌우 +-25mm 두 번 흔든다.
                     # 빠지거나 미끄러지면 위로만 빠지고 멈춤(다시 내려가지 않음, 그리퍼 안 엶). 버티면 제자리에 내려놓고 엶.

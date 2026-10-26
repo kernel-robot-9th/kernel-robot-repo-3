@@ -44,20 +44,27 @@ def quad_tri(tris, p, uv):   # p, uv: 4개 (반시계)
 def shrimp(src, out):
     S = 2.576   # 눈금 사진(1000px) 좌표 -> 원본
     fr = cv2.imread(str(src / "3cb3f9bd-image.jpg")); bk = cv2.imread(str(src / "443aca71-image.jpg"))
-    A = np.zeros((1000, 1400, 3), np.uint8)
-    A[:, :700] = warp(fr, [(130 * S, 25 * S), (855 * S, 45 * S), (885 * S, 990 * S), (80 * S, 985 * S)], 700, 1000)
-    A[:, 700:] = warp(bk, [(130 * S, 40 * S), (855 * S, 45 * S), (850 * S, 945 * S), (85 * S, 940 * S)], 700, 1000)
+    # 10-23: 옆면 사진(사용자 제공)을 아래 300px 띠로 추가 -> 옆면이 비어 보이던 것
+    sd = cv2.imread(str(src / "43e59242-image.jpg"))
+    A = np.zeros((1300, 1400, 3), np.uint8)
+    A[:1000, :700] = warp(fr, [(130 * S, 25 * S), (855 * S, 45 * S), (885 * S, 990 * S), (80 * S, 985 * S)], 700, 1000)
+    A[:1000, 700:] = warp(bk, [(130 * S, 40 * S), (855 * S, 45 * S), (850 * S, 945 * S), (85 * S, 940 * S)], 700, 1000)
+    A[1000:] = warp(sd, [(100 * S, 385 * S), (960 * S, 330 * S), (990 * S, 450 * S), (170 * S, 530 * S)], 1400, 300)
+    FB = 1000 / 1300; SB = 300 / 1300   # 텍스처 세로: 앞·뒷면 위 1000px, 옆면 아래 300px (UV t 는 아래가 0)
     cv2.imwrite(str(out / "shrimp_tex.jpg"), A, [cv2.IMWRITE_JPEG_QUALITY, 90])
     L, W, H, SEAL = 0.20, 0.14, 0.05, 0.015; nu, nv = 28, 40
-    def h(u, v):
+    SIDE = 0.6   # 옆면 띠 높이 = 가운데 두께의 60% (사진처럼 옆이 서 있는 봉지)
+    def hs(v):
         yv = abs(v) * L / 2; body = L / 2 - SEAL
         if yv >= body: return 0.0012
-        return max(0.0012, H / 2 * math.sqrt(max(0.0, 1 - abs(u) ** 6) * max(0.0, 1 - (yv / body) ** 4)))
+        return max(0.0012, H / 2 * math.sqrt(max(0.0, 1 - (yv / body) ** 4)))
+    def h(u, v):
+        return max(0.0012, hs(v) * max(SIDE, math.sqrt(max(0.0, 1 - abs(u) ** 8))))
     U = np.linspace(-1, 1, nu); V = np.linspace(-1, 1, nv); tris = []
     # 윗면 = 앞면 사진: 사진 위쪽(농심 로고) = +y, 사진 오른쪽 = +x  -> 위에서 볼 때 거울상 아님
-    uv_top = lambda u, v: (((u + 1) / 2) * 0.5, 1 - (1 - v) / 2)
+    uv_top = lambda u, v: (((u + 1) / 2) * 0.5, SB + FB * (1 - (1 - v) / 2))
     # 아랫면 = 뒷면 사진: 사진 위쪽 = +y, 사진 오른쪽 = -x
-    uv_bot = lambda u, v: (0.5 + ((1 - u) / 2) * 0.5, 1 - (1 - v) / 2)
+    uv_bot = lambda u, v: (0.5 + ((1 - u) / 2) * 0.5, SB + FB * (1 - (1 - v) / 2))
     for i in range(nu - 1):
         for j in range(nv - 1):
             us = (U[i], U[i + 1], U[i + 1], U[i]); vs = (V[j], V[j], V[j + 1], V[j + 1])
@@ -65,6 +72,16 @@ def shrimp(src, out):
             quad_tri(tris, pt, [uv_top(u, v) for u, v in zip(us, vs)])
             pb = [(u * W / 2, v * L / 2, -h(u, v)) for u, v in zip(us, vs)][::-1]
             quad_tri(tris, pb, [uv_bot(u, v) for u, v in zip(us, vs)][::-1])
+    # 옆면 띠: x = +-W/2 에서 z = -SIDE*hs ~ +SIDE*hs, 사진 왼쪽 -> 오른쪽 = y 방향
+    for side in (1, -1):
+        for j in range(nv - 1):
+            v0, v1 = V[j], V[j + 1]; z0, z1 = SIDE * hs(v0), SIDE * hs(v1)
+            x = side * W / 2
+            s0, s1 = ((v0 + 1) / 2, (v1 + 1) / 2) if side == 1 else ((1 - v0) / 2, (1 - v1) / 2)
+            p = [(x, v0 * L / 2, -z0), (x, v1 * L / 2, -z1), (x, v1 * L / 2, z1), (x, v0 * L / 2, z0)]
+            uv = [(s0, 0.0), (s1, 0.0), (s1, SB), (s0, SB)]
+            if side == -1: p, uv = p[::-1], uv[::-1]
+            quad_tri(tris, p, uv)
     write_tex_dae(out / "shrimp.dae", "shrimp_tex.jpg", tris)
 
 def ramen(src, out):
