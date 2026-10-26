@@ -131,16 +131,82 @@ def solver_for(reference_pulses, start_pulses=None):
     return direction_solver(fk, reference_pulses, start_pulses)
 
 
+def select_grasp_plan(reference, start, make_plan, *, wrist_policy="recorded",
+                      fixed_wrist_pulse=None):
+    """Keep ID 15 fixed for the whole path when explicitly configured."""
+    if wrist_policy == "recorded":
+        return make_plan(solver_for(reference, start))
+    if wrist_policy != "fixed":
+        raise ValueError("wrist_policy는 recorded 또는 fixed여야 합니다")
+    import numpy as np
+    from omx_tool_direction import fixed_wrist_solver, pulse_to_q
+    fixed = start[4] if fixed_wrist_pulse is None else fixed_wrist_pulse
+    actual_start = list(pulses(start))
+    actual_start[4] = fixed
+    pulse_to_q(actual_start)
+    fk = legacy("02_omx_xyz_offline.py", "fixed_wrist_fk")
+    plan = make_plan(fixed_wrist_solver(fk, fixed, actual_start))
+    for stage in plan["stages"]:
+        if stage["kind"] != "arm":
+            continue
+        target = list(stage["target"])
+        before = fk.forward(pulse_to_q(target))[0]
+        target[4] = fixed
+        after = fk.forward(pulse_to_q(target))[0]
+        if np.linalg.norm(after-before) > 0.002:
+            print(f"[WARN] 고정 손목 적용 시 계산상 끝점 차이 {np.linalg.norm(after-before)*1000:.2f}mm; 손목 고정을 유지하고 계속합니다.", flush=True)
+        stage["target"] = tuple(target)
+    plan["wrist_policy"] = "fixed"
+    plan["fixed_wrist_pulse"] = fixed
+    return plan
+
+
+def build_pick_plan(cfg, calibration, target, saved, reference, *,
+                    hover_only=False, from_folded=False, fixed_wrist_pulse=None,
+                    profile=None, drop_slot=None):
+    rule = get_rule(cfg, target.label)
+    height_poses = rule.get("pick_z_pose_by_shelf")
+    approach_poses = rule.get("approach_pose_by_shelf")
+    final_z = None
+    if height_poses or approach_poses:
+        if profile is None:
+            raise ValueError("상품별 기록을 읽을 팔 프로필이 필요합니다")
+        recorder = legacy("07_omx_pose_recorder.py", "product_pose_recorder")
+        from pick_core import shelf_for
+        side = shelf_for(calibration, target.point(rule))
+        if approach_poses:
+            recorded = recorder.load_pose(approach_poses[side], profile)["raw_pulses"]
+            saved = dict(saved, shelf_approach=recorded)
+        if height_poses:
+            from omx_tool_direction import pulse_to_q
+            recorded = recorder.load_pose(height_poses[side], profile)["raw_pulses"]
+            fk = legacy("02_omx_xyz_offline.py", "recorded_contact_fk")
+            final_z = float(fk.forward(pulse_to_q(recorded))[0][2] * 1000)
+    solver_start = saved.get("shelf_approach", saved["hover_high"])
+    if fixed_wrist_pulse is None and cfg.get("wrist_policy") == "fixed":
+        fixed_wrist_pulse = saved["hover_high"][4]
+    return select_grasp_plan(reference, solver_start,
+        lambda solve: build_plan(cfg, calibration, target, saved, solve,
+                                hover_only=hover_only, from_folded=from_folded,
+                                final_pick_z_mm=final_z),
+        wrist_policy=cfg.get("wrist_policy", "recorded"),
+        fixed_wrist_pulse=fixed_wrist_pulse)
+
+
 def add_wrist_report(plan, reference):
     from omx_tool_direction import heading, wrist_report
     fk = legacy("02_omx_xyz_offline.py", "pick_wrist_report_fk")
+    effective = reference
     plan["grasp_direction"] = dict(reference_pulses=reference,
-                                   model_tool_heading_deg=math.degrees(heading(fk, reference)))
+                                   model_tool_heading_deg=math.degrees(heading(fk, effective)))
     plan["wrist_path"] = wrist_report(fk, plan["stages"])
 
 
 def print_wrist_report(plan):
-    print(f"[WRIST] 기록한 집기 방향={plan['grasp_direction']['model_tool_heading_deg']:.1f} deg; 접근·집기·상승에서 유지")
+    if plan.get("wrist_policy") == "fixed":
+        print(f"[WRIST] ID15 고정={plan['fixed_wrist_pulse']}; 파지 방향은 베이스 방향에 따릅니다")
+    else:
+        print(f"[WRIST] 기록한 집기 방향={plan['grasp_direction']['model_tool_heading_deg']:.1f} deg; 접근·집기·상승에서 유지")
     print("[WRIST] " + " -> ".join(f"{r['stage']}:{r['id15_unwrapped_pulse']}" for r in plan["wrist_path"]))
     print("[WRIST] HIGH·드랍은 저장 자세를 사용합니다. 그 구간의 방향 전환도 빈 집게로 확인하세요.")
 
@@ -366,8 +432,8 @@ def run_pipeline(args, profile, cfg, parking=None):
         saved = saved_for(profile, args.hover)
         reference = reference_for(cfg, target.label, profile)
         print("[PLAN] IK 계산 중. 모터에는 연결하지 않습니다.", flush=True)
-        plan = build_plan(cfg, calibration, target, saved, solver_for(reference, saved["hover_high"]),
-                          hover_only=args.hover, from_folded=args.from_folded)
+        plan = build_pick_plan(cfg, calibration, target, saved, reference,
+                               hover_only=args.hover, from_folded=args.from_folded, profile=profile)
         add_wrist_report(plan, reference)
         plan.update(arm=profile.name, serial_port=str(profile.port), calibration_file=str(calibration_path),
                     calibration_check=calibration_report(calibration, cfg))
@@ -392,6 +458,14 @@ def run_pipeline(args, profile, cfg, parking=None):
         journal.emit("plan", {"plan": plan, "config": cfg})
         driver.prepare(saved["hover_high"], use_gripper=not args.hover or parking is not None,
                        from_folded=args.from_folded)
+        if cfg.get("wrist_policy") == "fixed":
+            from omx_wrist import canonical_wrist
+            fixed = canonical_wrist(bus.read(15, 132, 4))
+            plan = build_pick_plan(cfg, calibration, target, saved, reference,
+                                  hover_only=args.hover, from_folded=args.from_folded,
+                                  fixed_wrist_pulse=fixed, profile=profile)
+            add_wrist_report(plan, reference)
+            journal.emit("live_fixed_wrist_plan", plan)
         if input(f"{profile.name}: 주변과 경로를 확인하고 MOVE 입력: ").strip() != "MOVE":
             journal.emit("cancelled", {})
             print("[CANCELLED] 모터 목표·토크를 변경하지 않았습니다.")
@@ -477,19 +551,21 @@ def run_wrist_preview(args, profile, cfg):
     z = number(rule.get("pick_z_mm"), "pick_z_mm")
     clearance = number(rule.get("hover_clearance_mm"), "hover_clearance_mm", 0)
     extra = number(rule.get("approach_extra_mm"), "approach_extra_mm", 0)
-    solve = solver_for(reference, saved["hover_high"])
-    approach = solve((x, y, z + clearance + extra))
-    hover = solve((x, y, z + clearance))
-    contact = solve((x, y, z))
-    waypoints = [("HIGH", saved["hover_high"]), ("APPROACH", approach), ("HOVER", hover),
-                 ("PICK", contact), ("LIFT", hover), ("RETREAT", approach),
-                 ("CARRY_HIGH", saved["hover_high"]), ("DROP_APPROACH", saved["drop_approach"]),
-                 ("DROP_RELEASE", saved["drop_release"]), ("DROP_RETREAT", saved["drop_approach"]),
-                 ("RETURN_HIGH", saved["hover_high"])]
-    plan = dict(mode="WRIST_PREVIEW_NO_CAMERA_NO_MOTOR", class_name=args.label,
-                recorded_pick_xyz_mm=[x, y, z],
-                note="기록한 집기점의 모델 계산. 실제 YOLO 목표·도착·충돌은 미검증.",
-                stages=[dict(name=name, kind="arm", target=list(target)) for name, target in waypoints])
+    def make_preview(solve):
+        approach = solve((x, y, z + clearance + extra))
+        hover = solve((x, y, z + clearance))
+        contact = solve((x, y, z))
+        waypoints = [("HIGH", saved["hover_high"]), ("APPROACH", approach), ("HOVER", hover),
+                     ("PICK", contact), ("LIFT", hover), ("RETREAT", approach),
+                     ("CARRY_HIGH", saved["hover_high"]), ("DROP_APPROACH", saved["drop_approach"]),
+                     ("DROP_RELEASE", saved["drop_release"]), ("DROP_RETREAT", saved["drop_approach"]),
+                     ("RETURN_HIGH", saved["hover_high"])]
+        return dict(mode="WRIST_PREVIEW_NO_CAMERA_NO_MOTOR", class_name=args.label,
+                    recorded_pick_xyz_mm=[x, y, z],
+                    note="기록한 집기점의 모델 계산. 실제 YOLO 목표·도착·충돌은 미검증.",
+                    stages=[dict(name=name, kind="arm", target=list(target)) for name, target in waypoints])
+    plan = select_grasp_plan(reference, saved["hover_high"], make_preview,
+                            wrist_policy=cfg.get("wrist_policy", "recorded"))
     add_wrist_report(plan, reference)
     print_json(plan)
     write_output(args.output, plan)
