@@ -65,6 +65,7 @@ def near_gripper(obj, frame):
             b = find_box(frame); return b is not None and b[1] < 175 and abs(b[0] - 335) < 90
     except Exception: return False
     return False
+DRINK_SPOT, DRINK_R, DRINK_ZMIN = (346.0, 150.2), 120.0, 480.0   # 10-26: 게토레이는 1번 칸에 세워 두고 마지막에 처리 -> 그 둘레 12cm 는 z480 아래로 못 지나감
 LOOK = (430.0, 250.0, 450.0)   # 10-22 오후: 바구니 쪽(x400 y-350)으로 왔다 가는 게 헛걸음처럼 보임(사용자) -> 작업대 오른쪽 바깥. 경로 조작성 0.051 이상(random_area_check 로 계산)
 _LOOK_OLD = (400.0, -350.0, 450.0)   # 10-22: 팔을 비켜 작업대 전체를 보는 자세(수집 때 매번 오가던 바구니 쪽 대기 자세). 그리퍼가 작업대 밖
 def cam_locate(obj, frame, occl=True, px_out=None):
@@ -293,6 +294,8 @@ def main():
             pt_ = p0 + (target - p0) * t_
             if pt_[2] < 430.0 and 150.0 <= pt_[0] <= 560.0 and -680.0 <= pt_[1] <= -330.0:
                 raise Stop(f"{name}: 경로가 바구니 위를 낮게 지남 (x{pt_[0]:.0f} y{pt_[1]:.0f} z{pt_[2]:.0f}) -> 거부")
+            if pt_[2] < DRINK_ZMIN and math.hypot(pt_[0] - DRINK_SPOT[0], pt_[1] - DRINK_SPOT[1]) < DRINK_R:
+                raise Stop(f"{name}: 경로가 1번 칸(게토레이 자리) 옆을 낮게 지남 (x{pt_[0]:.0f} y{pt_[1]:.0f} z{pt_[2]:.0f}) -> 거부")
         check_path(q0, p0, target)
         seg = target - p0; L = float(np.linalg.norm(seg)); t0 = time.monotonic(); maxdev = 0.0
         amovel(posx(list(target) + ORI), vel=[v, 30.0], acc=[2 * v, 60.0], ref=DR_BASE)
@@ -438,11 +441,12 @@ def main():
                     # 바구니 쪽이면 높이 유지한 채 시작 자세로 먼저 (시작 자세 -> 비킨 자리는 조작성 0.058)
                     go(list(START), 50.0, "바구니에서빠지기")
                     cur0 = FKC.fk(fresh_q())[0]
-                if cur0[2] < LOOK[2] - 1.0: go([cur0[0], cur0[1], LOOK[2]], 40.0, "비켜보기상승")
-                go(list(LOOK), 50.0, "비켜서보기"); spin_for(0.5)
+                go([cur0[0], cur0[1], DRINK_ZMIN], 40.0, "비켜보기상승")   # 10-26: 1번 칸 게토레이 옆을 지나가므로 z480 으로
+                go([LOOK[0], LOOK[1], DRINK_ZMIN], 50.0, "비켜보기이동"); go(list(LOOK), 30.0, "비켜서보기"); spin_for(0.5)
                 for _ in range(6): cap.grab()
                 ok0, f0 = cap.read()
                 cam_xy = cam_locate(a.object, f0, occl=False) if ok0 else None
+                go([LOOK[0], LOOK[1], DRINK_ZMIN], 30.0, "비킨자리상승"); go([START[0], START[1], DRINK_ZMIN], 50.0, "시작자세위로"); go(list(START), 30.0, "시작자세로")   # 10-26: 1번 칸 옆을 높게 지나 돌아옴
             if cam_xy is None:
                 # 2026-10-21: 작업대가 비어 있는데도 정책이 내려가 빈손으로 닫음 -> 카메라가 못 찾으면 출발하지 않는다
                 if ok0: cv2.imwrite(str(run / "c00_notfound.jpg"), f0)   # 10-22 못 찾은 사진도 남김
@@ -462,6 +466,20 @@ def main():
                 okg = okg and BOUNDS_X[0] <= hover[0] <= BOUNDS_X[1] and BOUNDS_Y[0] <= hover[1] <= BOUNDS_Y[1]
                 if not okg:
                     raise Stop(f"상자 위치 x{hover[0]:.0f} y{hover[1]:.0f} 는 팔이 안전하게 집고 바구니까지 갈 수 없는 곳(수집 범위 밖). 작업대 안쪽으로 옮겨 주세요")
+                try:   # 10-26: 서 있는 게토레이(키 32cm) 옆으로 낮게 지나가다 충돌 -> 시작 자세~물건 위 경로 15cm 안에 서 있으면 출발 안 함
+                    from gatorade_vision import find_bottle as _fb
+                    _r = _fb(f0)
+                    if _r is not None and _r["cap_area"] >= 260:
+                        _P = json.loads((HERE / "cam_pose.json").read_text()); _K = np.array(_P["K"]); _D = np.array(_P["dist"])
+                        _R, _ = cv2.Rodrigues(np.array(_P["rvec"])); _C = -_R.T @ np.array(_P["tvec"])
+                        _u = cv2.undistortPoints(np.array([[_r["cap_px"]]], np.float64), _K, _D).ravel(); _d = _R.T @ np.array([_u[0], _u[1], 1.0])
+                        _B = (_C + (315.0 - _C[2]) / _d[2] * _d)[:2]
+                        _a, _b = np.array(START[:2]), np.array(hover[:2]); _t = float(np.clip(np.dot(_B - _a, _b - _a) / max(np.dot(_b - _a, _b - _a), 1e-6), 0, 1))
+                        _dist = float(np.linalg.norm(_B - (_a + _t * (_b - _a))))
+                        if _dist < 150.0 and math.hypot(_B[0] - DRINK_SPOT[0], _B[1] - DRINK_SPOT[1]) > 60.0:
+                            raise Stop(f"서 있는 게토레이(x{_B[0]:.0f} y{_B[1]:.0f})가 {a.object} 가는 길 {_dist:.0f}mm 옆에 있음 -> 게토레이를 먼저 담거나 눕혀 주세요")
+                except Stop: raise
+                except Exception as _ex: print("     (서 있는 병 검사 실패)", _ex, flush=True)
                 if clear_view or FKC.fk(fresh_q())[0][1] < -300.0:
                     # 10-22 사고: 바구니 위에서 찍고 먼 물건(x669)으로 가려고 그 자리에서 z300 으로 내려가 손가락이 바구니 안에 들어가 바구니를 끌고 감(비상정지).
                     # 바구니 쪽이면 높이를 유지한 채 시작 자세로 먼저 빠져나온다

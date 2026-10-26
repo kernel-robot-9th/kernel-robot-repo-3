@@ -45,15 +45,17 @@ def _tf_to_mat(t):
 
 FRAME = "base_link"
 TABLE = dict(cx=0.50, cy=0.0, sx=0.46, sy=0.52, z=0.0)           # 작업대 윗면 z=0 (로봇 베이스 높이)
-BASKET = dict(cx=0.35, cy=-0.50, sx=0.36, sy=0.26, h=0.30)       # 장바구니 (중심·크기는 대략, 실측 후 수정)
+BASKET = dict(cx=0.35, cy=-0.50, sx=0.26, sy=0.36, h=0.30)   # 10-26: 게토레이(32cm) 넣으려고 바구니를 90도 돌림 -> 긴 변이 좌우(y)       # 장바구니 (중심·크기는 대략, 실측 후 수정)
 FINGER = 0.105                                                     # 플랜지 -> 손끝 (높이 확인 실측으로 추정)
 # top: 쥐었을 때 물건 윗면이 손끝보다 얼마나 위인지(m). 실기: 초코송이 손끝이 책상 위 45mm(상자 85), 컵라면 윗면 25mm 아래를 잡음
 OBJ = {"choco": dict(size=(0.035, 0.12, 0.085), color=(0.98, 0.82, 0.10), name="CHOCO", top=0.040),
        "shrimp": dict(size=(0.14, 0.20, 0.05), color=(0.90, 0.15, 0.10), name="SHRIMP", top=0.020),
-       "ramen": dict(size=(0.10, 0.10, 0.11), color=(0.85, 0.30, 0.25), name="RAMEN", top=0.025)}
+       "ramen": dict(size=(0.10, 0.10, 0.11), color=(0.85, 0.30, 0.25), name="RAMEN", top=0.025),
+       # 10-26 게토레이: 눕힌 병 (길이 320, 몸통 95), 손끝이 작업대 위 15mm 를 잡아 병 윗면은 손끝보다 80mm 위. 모델 원점 = 병 가운데
+       "drink": dict(size=(0.095, 0.32, 0.095), color=(0.90, 0.85, 0.40), name="GATORADE", top=0.080)}
 # 처음 놓아 둘 자리 (작업대 위, m). 세 물건을 늘 같이 보여 준다(10-21 사용자 요청)
-PARK = {"choco": (0.40, 0.14), "shrimp": (0.56, 0.0), "ramen": (0.40, -0.14)}
-EMPTY = {"choco": 150.0, "shrimp": 42.0, "ramen": 150.0}   # 이 값 이하로 닫히면 빈손 (vla_run 과 같게)
+PARK = {"choco": (0.40, 0.14), "shrimp": (0.56, 0.0), "ramen": (0.40, -0.14), "drink": (0.50, 0.0)}
+EMPTY = {"choco": 150.0, "shrimp": 42.0, "ramen": 150.0, "drink": 60.0}   # 이 값 이하로 닫히면 빈손 (vla_run 과 같게)
 OBJ_MESH = "file:///home/omen/doosan_ws/vla_test/twin/meshes/"   # 2026-10-21 물건 3D 모델(.dae, 초코송이는 실제 사진 텍스처). gen_meshes.py / tex_box.py
 
 def in_basket(x, y):
@@ -79,7 +81,7 @@ class Twin(Node):
         # 지금 다루지 않는 물건들의 마지막 자리. 10-23: 켤 때 기본 자리(PARK)에 놓지 않는다(새우깡만 있는데 초코송이가 보임) -> 카메라로 본 것만 그림
         self.parked = {o: None for o in PARK}
         self.obj = "choco"; self.pos = None; self.held = False; self.in_basket = False
-        self.status = "IDLE"; self.alert = None; self.alert_t = 0.0; self.history = []; self.causes = []; self.miss = {}; self.seen_once = set(); self.extra = {}
+        self.status = "IDLE"; self.alert = None; self.alert_t = 0.0; self.history = []; self.causes = []; self.miss = {}; self.seen_once = set(); self.extra = {}; self.yaw = {}; self.tilt = None; self.stand = {}; self.anim = None
         self.create_timer(0.1, self.draw)
 
     # ---- 이벤트 ----
@@ -91,12 +93,15 @@ class Twin(Node):
             if self.pos is not None and not self.held: self.parked[self.obj] = list(self.pos)
             self.obj = new; p0 = self.parked.get(new); self.pos = list(p0) if p0 else None; self.held = False; self.in_basket = False
         name = OBJ[self.obj]["name"]
+        if e.get("object") in OBJ and "yaw" in e: self.yaw[e["object"]] = float(e["yaw"])   # 10-26 게토레이 누운 방향
         if k == "reset":
             self.parked = {o: None for o in PARK}; self.pos = None   # 10-23: 기본 자리 대신 비워 두고 카메라 동기화로 채움
             self.held = False; self.in_basket = False; self.status = "IDLE"; self.alert = None; self.causes = []; self.history = []
         elif k == "located":
             x, y = [v / 1000.0 for v in e["xy"]]; self.pos = [x, y, TABLE["z"]]; self.held = False; self.in_basket = False
             self.status = f"{name} located x{e['xy'][0]:.0f} y{e['xy'][1]:.0f}"; self.alert = None; self.causes = []
+            if "yaw" in e: self.yaw[self.obj] = float(e["yaw"]); self.tilt = None
+            self.stand.pop(self.obj, None); self.anim = None   # 카메라로 누운 자리를 다시 찾음
         elif k == "retry":   # pick_loop.py: 시도 시작 (2번째부터는 재시도)
             self.history = list(e.get("history", [])); n_, t_ = e.get("attempt", 1), e.get("tries", 1)
             self.alert = None; self.bad = False; self.causes = []; self.held = False
@@ -112,6 +117,11 @@ class Twin(Node):
             self.history = list(e.get("history", [])); self.bad = True
             self.raise_alert("STOPPED", f"{name} retry loop stopped ({e.get('reason', '?')}), check terminal", e)
         elif k == "seen":   # 10-22: 주문 서버가 쉬는 동안 카메라로 본 작업대 위 물건들 (트윈을 실제에 맞춤)
+            for o_, yv in e.get("yaw", {}).items(): self.yaw[o_] = float(yv)
+            for o_ in OBJ:   # 10-26: 서 있는 게토레이 표시
+                st_ = e.get("stand", {}).get(o_)
+                if st_ and self.anim is None: self.stand[o_] = [st_[0] / 1000.0, st_[1] / 1000.0]
+                elif o_ in self.stand and o_ in e.get("objects", {}) and not st_: self.stand.pop(o_, None)
             # 10-23: 같은 상품이 여러 개면 대표 1개(아래 규칙) 말고 나머지를 self.extra 에 따로 그린다
             for o, lst in e.get("all", {}).items():
                 if o not in OBJ: continue
@@ -141,6 +151,21 @@ class Twin(Node):
             self.causes = list(e.get("en", [])) if e.get("outcome") != "loaded" else []
             if e.get("ko"): self.publish_alert("analysis", " / ".join(e["ko"]), e)
             self.causes_ko = list(e.get("ko", [])) if e.get("outcome") != "loaded" else []
+        elif k == "standing":   # 10-26 gd_tip.py: 서 있는 게토레이 (바닥 자리 xy)
+            b = [v / 1000.0 for v in e["xy"]]; self.stand[self.obj] = b; self.anim = None
+            if not self.held: self.pos = [b[0], b[1], TABLE["z"]]
+            self.status = f"{name} standing at x{e['xy'][0]:.0f} y{e['xy'][1]:.0f} - pushing it over"
+        elif k == "tip_push":   # 10-26 gd_tip.py: 밀기 시작 -> 2초 동안 넘어지는 모습
+            b = [v / 1000.0 for v in e["xy"]]; th = math.radians(float(e.get("deg", 0)))
+            self.anim = dict(B=b, d=(math.cos(th), math.sin(th)), t0=time.monotonic()); self.stand.pop(self.obj, None)
+            self.status = f"{name} tipping over ({float(e.get('deg', 0)):.0f} deg)"
+        elif k == "tilt":   # 10-26 게토레이: 들고 잰 병 기울기 (deg, 뚜껑 쪽 아래 +). -999 = 팔에 가려 모름
+            d_ = float(e.get("deg", -999)); self.tilt = None if d_ < -900 else d_
+            self.status = f"{name} held, tilt " + (f"{self.tilt:+.0f} deg" if self.tilt is not None else "unknown (label hidden by arm)") + f", gripper {e.get('grip', 0):.0f}"
+        elif k == "tilt_warn":   # 10-26 게토레이: 운반 중 그리퍼 값이 줄어듦 = 병이 손가락에서 돎
+            d_ = float(e.get("deg", -999)); self.tilt = None if d_ < -900 else d_
+            ang = f"{self.tilt:+.0f} deg" if self.tilt is not None else "unknown"
+            self.raise_alert("TILT WARNING", f"{name} rotating in gripper at {e.get('where', '?')}: tilt {ang}, gripper {e.get('grip_from', 0):.0f}->{e.get('grip_to', 0):.0f}", e)
         elif k == "grasped":
             self.held = True; self.status = f"{name} GRASPED (gripper {e.get('closed_pos', 0):.0f}) - carrying"
         elif k == "grasp_failed":
@@ -184,6 +209,7 @@ class Twin(Node):
              "not_found": (f"작업대에서 {n}{jr} 못 찾음", True),
              "not_in_basket": (f"적재 실패: 놓은 뒤에도 {n}{jg} 작업대 위에 있음 ({xy('xy')})", True),
              "loaded": (f"적재 완료: {n} 바구니에 들어감 (작업대 비어 있음)", False),
+             "tilt_warn": (f"기울어짐 경고: 운반 중 {n}{jg} 손가락에서 돌기 시작 (기울기 " + (f"{e.get('deg', 0):+.0f}도" if e.get('deg', -999) > -900 else "모름") + ")", True),
              "released": ((f"{n} 바구니 위에서 놓음", False) if rel_ok else (f"적재 실패: 바구니 밖에서 놓음 ({xy('xyz')})", True))}.get(k)
         if t and not (k == "loaded" and self.bad): self.head_ko, self.bad = t
 
@@ -205,6 +231,9 @@ class Twin(Node):
             lines.append(("", self.f_small, (0, 0, 0), 10)); lines.append(("ATTEMPTS", self.f_big, (140, 190, 255), 46))
             for h in self.history:
                 for k, ln in enumerate(textwrap.wrap(h, 30)): lines.append((("" if k == 0 else "  ") + ln, self.f_small, (210, 210, 220), 38))
+        if self.obj == "drink" and self.tilt is not None:   # 10-26: 게토레이 기울어진 각도
+            lines.append(("", self.f_small, (0, 0, 0), 10)); lines.append(("BOTTLE TILT", self.f_big, (255, 170, 80), 46))
+            lines.append((f"{self.tilt:+.1f} deg ({'cap side down' if self.tilt > 0 else 'bottom side down'})", self.f_small, (240, 240, 240), 38))
         lines.append(("", self.f_small, (0, 0, 0), 14)); lines.append((f"gripper {self.grip:.0f} (0 closed, 750 open)", self.f_small, (150, 150, 160), 38))
         H = 16 + sum(l[3] for l in lines); im = PILImage.new("RGB", (W, H), (30, 30, 34)); d = ImageDraw.Draw(im)
         d.rectangle([0, 0, W, head_h], fill=(170, 25, 25) if self.bad else (35, 110, 60))
@@ -277,6 +306,20 @@ class Twin(Node):
                 m = self.mk(20 + idx, Marker.MESH_RESOURCE, "object"); m.mesh_resource = OBJ_MESH + name + ".dae"
                 m.mesh_use_embedded_materials = True; m.color.r = m.color.g = m.color.b = m.color.a = 0.0   # 모델 안의 색·사진을 그대로
                 m.pose.position.x, m.pose.position.y, m.pose.position.z = float(pos[0]), float(pos[1]), float(z)
+                if name in self.yaw:   # 10-26 게토레이 누운 방향 (z 축 회전)
+                    hz = math.radians(self.yaw[name]) / 2; m.pose.orientation.z, m.pose.orientation.w = math.sin(hz), math.cos(hz)
+                if name == "drink" and not held and (self.anim is not None or name in self.stand):
+                    # 10-26: 서 있으면 똑바로, 밀기 시작하면 바닥을 축으로 2초 동안 미는 방향으로 넘어짐 (모델 +y = 바닥 -> 뚜껑)
+                    if self.anim is not None:
+                        b = self.anim["B"]; dx, dy = self.anim["d"]; u = min(1.0, (time.monotonic() - self.anim["t0"]) / 2.0)
+                        th = math.radians(90.0 * (u * u * (3 - 2 * u)))
+                    else:
+                        b = self.stand[name]; dx, dy = 1.0, 0.0; th = 0.0
+                    ax = np.array([math.sin(th) * dx, math.sin(th) * dy, math.cos(th)]); X = np.array([-dy, dx, 0.0]); Zc = np.cross(X, ax)
+                    c = np.array([b[0], b[1], TABLE["z"]]) + ax * 0.16 + np.array([0, 0, 0.0475 * math.sin(th)])
+                    qx, qy, qz, qw = _quat(np.c_[X, ax, Zc])
+                    m.pose.position.x, m.pose.position.y, m.pose.position.z = float(c[0]), float(c[1]), float(c[2])
+                    m.pose.orientation.x, m.pose.orientation.y, m.pose.orientation.z, m.pose.orientation.w = qx, qy, qz, qw
                 m.scale.x = m.scale.y = m.scale.z = 1.0; arr.markers.append(m)
             else:
                 d = self.mk(20 + idx, Marker.MESH_RESOURCE, "object"); d.action = Marker.DELETE; arr.markers.append(d)
