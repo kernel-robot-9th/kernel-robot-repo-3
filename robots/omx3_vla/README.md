@@ -6,7 +6,7 @@
 
 ## 시작 위치
 
-저장소 루트에서 `cd robot/omx3_vla`로 이동한 뒤 실행합니다.
+저장소 루트에서 `cd robots/omx3_vla`로 이동한 뒤 실행합니다.
 [README_VLA_KO.md](README_VLA_KO.md)의 `/home/team2/robot_shopping` 작업 경로는
 이 폴더로 바꿔 읽으세요. 문서에서 언급한 `reports/`는 원래 PC의 실행 결과이며 공유 대상에서 제외했습니다.
 
