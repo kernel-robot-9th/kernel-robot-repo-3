@@ -1,0 +1,11 @@
+{
+  "ssh_key": "~/.ssh/cartrina_field_ed25519",
+  "profiles": {"P1": "runtime/field/pinky-mobile.json", "P2": "runtime/field/pinky-mobile-p2.json"},
+  "robots": {"P1": "pinky@192.168.0.16", "P2": "pinky@192.168.0.17"},
+  "stations": {
+    "A": {"host": "choi-chun-hwan@192.168.0.18", "root": "/home/choi-chun-hwan/robot_shopping/kernel-robot-repo-3", "python": "/home/choi-chun-hwan/dev_ws/omxtest/.venv-pick/bin/python"},
+    "B": {"host": "jimmy@192.168.0.19", "root": "/home/jimmy/robot_shopping/kernel-robot-repo-3", "python": "/home/jimmy/dev_ws/omxtest/.venv-pick/bin/python"},
+    "C": {"host": "team2@192.168.0.20", "root": "/home/team2/robot_shopping/kernel-robot-repo-3", "python": "/home/team2/venv/il/bin/python", "parking_python": "/home/team2/robot_shopping/kernel-robot-repo-3/runtime/field/pinky-camera-venv/bin/python"}
+  },
+  "state_file": "runtime/field/pinky-control-state.json"
+}
