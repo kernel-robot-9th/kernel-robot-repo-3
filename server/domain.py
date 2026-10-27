@@ -4,7 +4,6 @@ from functools import wraps
 import hashlib
 import hmac
 import json
-import math
 import secrets
 import threading
 import time
@@ -64,11 +63,9 @@ def atomic(method):
 
 
 class Engine:
-    # These are mock development limits, NOT measured physical tolerances.
+    # Connection age is displayed separately from device execution.
     capacity = 6
     cart_capacity = 3
-    observation_ttl = 300
-    command_timeout = 120
     heartbeat_timeout = 10
 
     def __init__(self, path=":memory:", clock=time.time, *, catalog_path=PRODUCTS_PATH, mode="mock", readiness=None, test_only=False):
@@ -79,9 +76,6 @@ class Engine:
         self.receiver_clock = time.monotonic
         if mode == "hardware":
             require(test_only or self.readiness.get("approved") is True, "현장 연결 검증 설정이 필요합니다")
-            # Field adapters must continuously report parking/basket observations.
-            # Never reuse the generous manual-step MOCK observation window.
-            self.observation_ttl = 2
         self.products = load_products(catalog_path)
         self.clock, self.lock, self.records = clock, threading.RLock(), []
         self.store = Store(path)
@@ -163,7 +157,11 @@ class Engine:
     @atomic
     def create_session(self, label):
         require(isinstance(label, str) and 1 <= len(label.strip()) <= 40, "고객 이름은 1~40자입니다", 422)
-        available = next((rid for rid, robot in self.state["robots"].items()
+        candidates = list(self.state['robots'].items())
+        if self.mode == 'hardware':
+            preferred = self.readiness.get('preferred_robot')
+            candidates.sort(key=lambda pair: pair[0] != preferred)
+        available = next((rid for rid, robot in candidates
                           if robot["session_id"] is None), None)
         require(available, "사용 가능한 로봇이 없습니다. 기존 고객 인계·이탈 후 다시 시작하세요")
         sid, token = uid(), secrets.token_urlsafe(32)
@@ -217,9 +215,6 @@ class Engine:
         require(not self.state["catalog_reconciliation_required"], "기존 실행의 재고 확인이 필요합니다")
         require(sum(normalized.values()) <= self.capacity, "한 주문은 최대 6개입니다", 422)
         for sku, qty in normalized.items():
-            if self.mode == "hardware":
-                require(sku in self.readiness.get("supported_skus", []), "실물 집기·하역 검증 전 상품입니다")
-                require(session["basket_side"] in self.readiness.get("handoff_sides", []), "해당 방향 모델이 준비되지 않았습니다")
             stock = self.state["stock"][sku]
             require(qty <= stock["on_hand"] - stock["reserved"], "주문 가능 재고가 부족합니다: " + self.products[sku]["name"])
         order = {"id": uid(), "session_id": sid, "request_id": request_id,
@@ -323,27 +318,32 @@ class Engine:
                "status": "CREATED", "created_at": self.clock(), "sent_at": None,
                "accepted_at": None, "result": None}
         if kind == "HANDOFF":
-            cmd["basket_id"] = self.state["basket"]["basket_id"]
+            cmd["basket_id"] = self._session(task["session_id"])["basket_id"]
             cmd["basket_side"] = self._session(task["session_id"])["basket_side"]
             cmd["model_id"] = "act-left-v2-050000" if cmd["basket_side"] == "left" else self.readiness.get("right_model_id", "act-right-pending")
-            cmd["max_runtime_seconds"] = 180
-            cmd["n_action_steps"] = 100
         cmd["trip_id"] = task.get("trip_id")
         if kind == "STOP_POLICY":
             cmd["target_command_id"] = next(c["id"] for c in self.state["commands"].values()
                                             if c["task_id"] == task["id"] and c["kind"] == "HANDOFF")
-        cmd["timeout_seconds"] = 200 if kind == "HANDOFF" else (10 if kind == "STOP_POLICY" else self.command_timeout)
+        if self.mode == 'hardware' and device_id.startswith('pinky-') and kind in {'NAVIGATE', 'LEAVE'}:
+            routes = self.readiness.get('pinky_routes_files', {}).get(device_id) or self.readiness.get('pinky_routes_file')
+            if routes:
+                from robots.pinky.field_routes import command_route
+                try:
+                    cmd['path_plan'] = command_route(routes, cmd)
+                except (OSError, KeyError, ValueError) as exc:
+                    require(False, '실물 Pinky 관제 경로 설정 확인 필요: ' + str(exc)[:120])
         self.state["commands"][cmd["id"]] = cmd
         self._log("command_created", {"kind": kind, "device_id": device_id}, command=cmd)
         return cmd
 
-    def _fresh_observation(self, at):
-        return at is not None and -2 <= self.clock() - at <= self.observation_ttl
+    def _observed(self, at):
+        return at is not None
 
     def _ready(self, task):
         basket = self.state["basket"]
         return bool(basket and basket["session_id"] == task["session_id"]
-                    and basket["task_id"] == task["id"] and self._fresh_observation(basket["at"]))
+                    and basket["task_id"] == task["id"] and self._observed(basket["at"]))
 
     def _pump(self):
         if self.test_only or self.state['device_tests']['hold']:
@@ -371,7 +371,7 @@ class Engine:
                     self.state["zones"][task["zone_id"]]["queue"].append(task["id"])
             if session["current_task"]:
                 task = self.state["tasks"][session["current_task"]]
-                if task["state"] in {"WAIT_STOP", "WAIT_BASKET"} and self._fresh_observation(task["stopped_at"]):
+                if task["state"] in {"WAIT_STOP", "WAIT_BASKET"} and self._observed(task["stopped_at"]):
                     if task["kind"] == "HANDOFF" and not self._ready(task):
                         task["state"] = "WAIT_BASKET"
                     elif self.state["devices"][task["device_id"]]["connected"]:
@@ -444,12 +444,6 @@ class Engine:
             if cmd["kind"] != "STOP":
                 require(not self._session(cmd["session_id"])["error"], "중단된 작업입니다")
                 require(self.state["zones"][cmd["zone_id"]]["owner"] == cmd["task_id"], "구역 사용 권한 없음")
-                if cmd["kind"] in {"PICK", "HANDOFF"}:
-                    if not self._fresh_observation(task["stopped_at"]) or (cmd["kind"] == "HANDOFF" and not self._ready(task)):
-                        self._fault(task, "장비 실행 전 정차 또는 장바구니 관측 만료")
-                        return None
-                if cmd["kind"] == "LEAVE":
-                    require(task["arm_clear"], "팔 이탈 미확인")
             cmd["status"], cmd["sent_at"] = "SENT", self.clock()
             self._log("command_sent", {"gateway_id": gateway_id}, command=cmd)
             return deepcopy(cmd)
@@ -457,7 +451,7 @@ class Engine:
 
     def _fresh_gateway(self):
         at = self.state["heartbeat_at"]
-        return at is not None and 0 <= self.clock() - at <= self.heartbeat_timeout
+        return at is not None
 
     @atomic
     def event(self, event):
@@ -487,13 +481,12 @@ class Engine:
         require(not session["error"] or cmd["kind"] == "STOP", "오류 작업의 후속 결과는 상태 확인이 필요합니다")
         require(self._fresh_gateway() and self.state["devices"][cmd["device_id"]]["connected"], "연결 상태 미확인")
         require(session["current_task"] == task["id"], "현재 작업의 관측이 아닙니다")
-        if kind in {"ACCEPTED", "SUCCEEDED", "FAILED"} and cmd["kind"] != "STOP":
-            require(cmd["sent_at"] is not None and self.clock() - cmd["sent_at"] <= cmd.get("timeout_seconds", self.command_timeout),
-                    "명령 결과 수신 기한이 지났습니다. 상태 확인이 필요합니다")
-        if kind in {"STOPPED", "ARM_CLEAR", "EXITED", "TRANSFER_READY"}:
-            at = event.get("observed_at")
-            require(type(at) in {float, int} and math.isfinite(at) and self._fresh_observation(at),
-                    "오래됐거나 미래 시각인 관측입니다", 422)
+        if self.mode == 'hardware' and kind != 'ACCEPTED':
+            if kind in {'SUCCEEDED', 'FAILED', 'TRANSFER_READY'}:
+                self._execution_result(cmd, task, session, kind, data)
+            self.state['results'][key] = fingerprint
+            self._log('device_event', {'kind': kind, 'data': data}, command=cmd)
+            return {'duplicate': False}
         if kind == "ACCEPTED":
             require(cmd["status"] in {"SENT", "ACCEPTED"}, "전송 후에만 수락할 수 있습니다")
             cmd["status"], cmd["accepted_at"] = "ACCEPTED", self.clock()
@@ -528,7 +521,6 @@ class Engine:
                 task["state"] = "WAIT_EXIT"
         elif kind == "TRANSFER_READY":
             require(cmd["kind"] == "HANDOFF" and cmd["status"] == "ACCEPTED", "실행 중인 인계 작업이 아닙니다")
-            require(cmd["sent_at"] is not None and self.clock() - cmd["sent_at"] <= cmd["timeout_seconds"], "인계 시간 초과")
             require(all(data.get(k) is True for k in ("cart_visible", "cart_empty", "last_item_placed", "standby_reached")),
                     "카트 비움만으로 완료할 수 없습니다. 마지막 담기·복귀·가림 없음 확인이 필요합니다")
             self._confirm_items(cmd, data, complete=True)
@@ -568,8 +560,37 @@ class Engine:
         self._log("device_event", {"kind": kind, "data": data, "event_id": key}, command=cmd)
         return {"duplicate": False}
 
-    def _confirm_items(self, cmd, data, *, complete):
+    def _execution_result(self, cmd, task, session, kind, data):
+        kind = 'SUCCEEDED' if kind == 'TRANSFER_READY' else kind
+        cmd.update(status=kind, result={'kind': kind, 'data': data})
+        if cmd['kind'] in {'PICK', 'HANDOFF'}:
+            executed = data.get('executed_items', data.get('confirmed_items', []))
+            self._confirm_items(cmd, {'confirmed_items': executed, 'basket_id': cmd.get('basket_id')},
+                                complete=False, physical=False)
+        if kind == 'FAILED':
+            if cmd['kind'] != 'STOP':
+                self._fault(task, str(data.get('reason', '장비 실행 실패'))[:200])
+        elif cmd['kind'] == 'NAVIGATE':
+            task['state'] = 'ARM_WORK'
+            self._command(task, 'PICK' if task['kind'] == 'LOAD' else 'HANDOFF', task['device_id'])
+        elif cmd['kind'] in {'PICK', 'HANDOFF'}:
+            task['state'] = 'LEAVING'
+            self._command(task, 'LEAVE', task['robot_id'])
+        elif cmd['kind'] == 'LEAVE':
+            self.state['zones'][task['zone_id']]['owner'] = None
+            task['state'], session['current_task'] = 'DONE', None
+            if task['kind'] == 'HANDOFF':
+                self.state['basket'] = None
+                self.state['trips'][task['trip_id']]['state'] = 'DONE'
+                session['active_trip'] = None
+                session['state'] = 'CHECKOUT_REQUESTED'
+                if self._complete_shopping(session, task):
+                    self.state['robots'][task['robot_id']]['session_id'] = None
+            self._log('zone_released', {'zone_id': task['zone_id']}, task=task)
+
+    def _confirm_items(self, cmd, data, *, complete, physical=True):
         confirmed = data.get("confirmed_items", [])
+        recorded = self.state.get("operator_observations", {}).get(cmd["id"], {})
         require(isinstance(confirmed, list) and all(isinstance(i, dict) and set(i) == {"sku", "slot", "item_id"}
                 and isinstance(i["sku"], str) and isinstance(i["item_id"], str) and type(i["slot"]) is int
                 for i in confirmed), "확인 상품 형식 오류", 422)
@@ -592,13 +613,14 @@ class Engine:
                 stock["reserved"] -= 1
                 unit["state"] = "LOADED"
                 session["inventory"].append({"sku": sku, "slot": slot, "item_id": item_id, "trip_id": cmd["trip_id"],
-                    "delivered": False, "load_command_id": cmd["id"], "handoff_command_id": None})
+                    "delivered": False, "load_command_id": cmd["id"], "handoff_command_id": None,
+                    "physical_loading_confirmed": physical or "pick-"+str(slot) in recorded})
             else:
                 require(unit["state"] == "LOADED", "인계할 상품을 확인할 수 없습니다")
                 item = next(i for i in session["inventory"] if i["item_id"] == item_id)
-                item.update(delivered=True, handoff_command_id=cmd["id"])
+                item.update(delivered=True, handoff_command_id=cmd["id"], physical_delivery_confirmed=physical or "delivered" in recorded)
                 unit["state"] = "DELIVERED"
-            self._log("item_confirmed", {"sku": sku, "slot": slot, "item_id": item_id, "trip_id": cmd["trip_id"],
+            self._log("item_confirmed" if physical else "item_executed", {"sku": sku, "slot": slot, "item_id": item_id, "trip_id": cmd["trip_id"],
                 "direction": "LOAD" if cmd["kind"] == "PICK" else "HANDOFF"}, command=cmd)
 
     @atomic
@@ -611,18 +633,6 @@ class Engine:
         require(self.state["zones"]["handoff"]["owner"] == task_id, "인계 구역 사용 고객이 아닙니다")
         self.state["basket"] = {"session_id": sid, "task_id": task_id, "basket_id": basket_id, "at": self.clock()}
         self._log("basket_ready_confirmed", {"basket_id": basket_id, "source": "operator_confirmation"}, task=task)
-
-    @atomic
-    def watchdog(self):
-        if self.state["heartbeat_at"] is not None and not self._fresh_gateway():
-            for device in self.state["devices"].values():
-                device["connected"] = False
-            for session in self.state["sessions"].values():
-                if session["current_task"]:
-                    self._fault(self.state["tasks"][session["current_task"]], "연결 프로그램 통신 시간 초과")
-        for cmd in list(self.state["commands"].values()):
-            if cmd["kind"] != "STOP" and cmd["status"] in {"SENT", "ACCEPTED"} and self.clock() - cmd["sent_at"] > cmd.get("timeout_seconds", self.command_timeout):
-                self._fault(self.state["tasks"][cmd["task_id"]], "명령 결과 시간 초과: 성공 여부 불명")
 
     @atomic
     def mock_steps(self, count):

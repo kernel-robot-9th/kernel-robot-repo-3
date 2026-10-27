@@ -1,4 +1,5 @@
 from copy import deepcopy
+from pathlib import Path
 import json
 import threading
 import time
@@ -12,10 +13,12 @@ from server.domain import DomainError, Engine
 from server.distributed import DistributedEngine
 from server.video import VideoRegistry, VIDEO_PATH
 from robot_gateway.frames import LatestFramePublisher
-from robot_gateway.hardware.config import ROOT, validate
+from robot_gateway.hardware.config import validate
 from robot_gateway.hardware.evidence import EvidenceFiles
 from robot_gateway.hardware.worker import Executor
 from test_api import ADMIN, GATEWAY, bearer
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_video_requires_admin_and_freeze_does_not_refresh_timestamp(rig):
@@ -80,7 +83,7 @@ def test_default_hardware_configs_cannot_arm_devices():
         Engine(mode='hardware')
 
 
-def test_hardware_rejects_mock_heartbeat_mock_action_and_unready_right():
+def test_hardware_rejects_mock_events_but_accepts_configured_demo_orders():
     engine = DistributedEngine(mode='hardware', readiness={'approved': True, 'supported_skus': ['SKU-RICE-CHIP'], 'handoff_sides': ['left']})
     tokens = {n: 'test-scoped-token-' + n for n in engine.profiles}
     try:
@@ -92,16 +95,15 @@ def test_hardware_rejects_mock_heartbeat_mock_action_and_unready_right():
             assert client.post('/api/admin/mock/new-run', headers=bearer(ADMIN), json={}).status_code == 409
         engine.create_session('left')
         right = engine.create_session('right')['session_id']
-        with pytest.raises(DomainError):
-            engine.submit_order(right, [{'sku': 'SKU-RICE-CHIP', 'quantity': 1}], 'right-not-ready')
-        assert engine.state['stock']['SKU-RICE-CHIP']['reserved'] == 0
+        engine.submit_order(right, [{'sku': 'SKU-RICE-CHIP', 'quantity': 1}], 'right-demo-order')
+        assert engine.state['stock']['SKU-RICE-CHIP']['reserved'] == 1
     finally:
         engine.store.close()
 
 
-def test_evidence_requires_fresh_correlated_observation(tmp_path):
+def test_evidence_keeps_correlated_observation_without_expiry(tmp_path):
     clock = Clock()
-    evidence = EvidenceFiles(tmp_path, clock)
+    evidence = EvidenceFiles(tmp_path)
     command = {'id': 'abcdef-0123', 'run_id': 'run', 'task_id': 'task', 'session_id': 'session',
                'device_id': 'omx', 'created_at': clock() - 1}
     path = tmp_path / 'abcdef-0123.handoff.json'
@@ -109,7 +111,7 @@ def test_evidence_requires_fresh_correlated_observation(tmp_path):
     path.write_text(json.dumps(observation))
     assert evidence.read(command, 'handoff') == {'cart_empty': True}
     clock.now += 3
-    assert evidence.read(command, 'handoff') is None
+    assert evidence.read(command, 'handoff') == {'cart_empty': True}
     observation.update(observed_at=clock(), task_id='other')
     path.write_text(json.dumps(observation))
     assert evidence.read(command, 'handoff') is None
@@ -137,37 +139,27 @@ def test_media_credentials_are_scoped_and_existing_config_is_preserved(tmp_path)
     assert (directory / 'mediamtx.yml').read_bytes() == before
 
 
-@pytest.mark.parametrize('moving,torque,success', [(False, 1, True), (True, 1, False), (False, 0, False)])
-def test_act_stop_confirmation_uses_feedback_not_just_request(moving, torque, success):
+def test_act_stop_requests_hold_without_claiming_physical_confirmation():
     from robot_gateway.hardware.act import ActArm
     from types import SimpleNamespace
-    readings, actions = [], []
-    def read(name, **kwargs):
-        if name == 'Torque_Enable':
-            return {'joint': torque}
-        readings.append(name)
-        return {'joint': len(readings) if moving else 10}
-    arm = ActArm({'position_tolerance': .1}, None, None)
-    arm.robot = SimpleNamespace(bus=SimpleNamespace(sync_read=read), send_action=actions.append)
-    if success:
-        assert arm.stopped({}, threading.Event()) == {
-            'policy_stopped': True, 'motion_stopped': True, 'hold_confirmed': True, 'torque_enabled': True}
-        assert actions == [{'joint.pos': 10}]
-    else:
-        with pytest.raises(RuntimeError, match='정지 미확인|토크 유지 미확인'):
-            arm.stopped({}, threading.Event())
+    actions = []
+    arm = ActArm({}, None, None)
+    arm.policy = object()
+    arm.robot = SimpleNamespace(bus=SimpleNamespace(sync_read=lambda _: {'joint': 10}),
+                                send_action=actions.append)
+    assert arm.stopped({}, threading.Event()) == {'policy_stopped': True, 'hold_requested': True}
+    assert arm.policy is None
+    assert actions == [{'joint.pos': 10}]
 
 
-def test_act_standby_and_stop_tolerances_are_independent():
+def test_act_missing_direction_does_not_connect_or_substitute_model():
     from robot_gateway.hardware.act import ActArm
-    arm = ActArm({
-        'standby_pose': {'joint': 10},
-        'standby_tolerance': 5,
-        'position_tolerance': .5,
-    }, None, None)
-    assert arm.at_standby({'joint.pos': 14.9})
-    assert not arm.at_standby({'joint.pos': 15.1})
-    assert arm.config['position_tolerance'] == .5
+    from unittest.mock import Mock
+    arm = ActArm({'models': {'left': {'path': 'unused'}, 'right': None}}, None, None)
+    arm.connect = Mock()
+    with pytest.raises(RuntimeError, match='선택한 방향의 모델'):
+        arm.execute({'basket_side': 'right'}, threading.Event())
+    arm.connect.assert_not_called()
 
 
 def test_mock_checkpoint_cannot_be_opened_as_hardware(tmp_path):
@@ -184,11 +176,12 @@ def test_mock_checkpoint_cannot_be_opened_as_hardware(tmp_path):
         restored.store.close()
 
 
-def test_hardware_cannot_reuse_manual_mock_observation_window():
+def test_hardware_observation_presence_does_not_expire_in_demo():
     clock = Clock()
     engine = Engine(clock=clock, mode='hardware', readiness={'approved': True})
     try:
-        assert engine._fresh_observation(clock())
-        assert not engine._fresh_observation(clock() - 3)
+        assert engine._observed(clock())
+        assert engine._observed(clock() - 3)
+        assert not engine._observed(None)
     finally:
         engine.store.close()

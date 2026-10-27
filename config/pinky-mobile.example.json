@@ -1,0 +1,16 @@
+{
+  "robot_id": "pinky-1",
+  "physical_id": "pinky_eed0",
+  "domain_id": 1,
+  "frame_id": "map",
+  "base_frame": "base_footprint",
+  "action_name": "/follow_path",
+  "spin_action_name": "/spin",
+  "odom_topic": "/odom",
+  "map_topic": "/map",
+  "base_command_topic": "/cartrina/p1/drive_cmd_vel",
+  "base_node": "pinky_bringup",
+  "registration_topic": "/cartrina/p1/register_goal",
+  "goals_file": "runtime/field/pinky-p1-measured-goals.json",
+  "entry_planner_id": "BasketEntry"
+}

@@ -67,7 +67,7 @@ async function send(retry = false) {
   try {
     const result = await api<Trial>('/admin/device-tests', props.token, body)
     choose(result.id); pending.value = null; sessionStorage.removeItem(pendingKey)
-    message.value = '시험 요청을 등록했습니다. 중계 수락과 실행 결과를 확인하세요.'
+    message.value = '시험 요청 접수'
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
     // A definitive rejection can be corrected; a network timeout keeps the same request key.
@@ -105,24 +105,24 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
     <div v-if="connectionError" class="alert danger" role="alert">{{ connectionError }} · 마지막 조회 상태입니다. 실제 정지로 해석하지 마세요.</div>
     <div v-if="error" class="alert danger" role="alert">{{ error }}</div>
     <div v-if="message" class="alert success" role="status">{{ message }}</div>
-    <p v-if="state && !state.distributed" class="alert danger">분산 중계 모드로 서버를 실행해야 합니다. FIELD_SETUP.md의 실행 방법을 확인하세요.</p>
+    <p v-if="state && !state.distributed" class="alert danger">분산 중계 모드 필요</p>
     <div class="panel">
       <div class="section-title"><h2>장비 테스트</h2><span class="pill">{{ state?.mode === 'hardware' ? '실물 장비 시험' : 'MOCK · 가상 시험' }}</span></div>
-      <p>주문·재고와 별도로 기록합니다. 동작 시험은 실제 정지와 상품·작업 구역 복구를 확인할 때까지 주문 실행을 보류합니다.</p>
-      <p v-if="state?.test_only" class="muted">시험 전용 서버 · 일반 주문 실행 비활성</p>
+
+      <p v-if="state?.test_only" class="muted">시험 전용</p>
       <p v-if="state?.hold" class="alert danger">동작 시험 {{ shortId(state.hold) }} 점유 유지 <button class="secondary" @click="choose(state.hold)">해당 시험 보기</button></p>
       <div class="test-fields">
         <label>대상 중계<select v-model="node" @change="changeNode"><option value="gateway-a">A · YOLO 적재</option><option value="gateway-b">B · YOLO 적재</option><option value="gateway-c">C · ACT 하역</option></select></label>
         <label>시험 명령<select v-model="kind"><option value="PING">통신 응답 확인</option><option value="INSPECT">설정 검사</option><option v-if="node !== 'gateway-c'" value="PICK">상품 1개 적재</option><option v-else value="HANDOFF">바구니 하역</option></select></label>
       </div>
-      <p><span class="status-dot" :class="{ online: report?.online }"></span>{{ report?.online ? '시험 실행부 응답 중' : '시험 실행부 응답 미확인' }} · 장치·카메라의 정상 동작 확인과 별도입니다.</p>
-      <template v-if="report">
+      <p><span class="status-dot" :class="{ online: report?.online }"></span>{{ report?.online ? '시험 응답 중' : '시험 응답 대기' }}</p>
+      <details v-if="report" class="inspection-details"><summary>설정 정보</summary>
         <p class="muted">{{ report.inspection }} · Python {{ report.python || '미확인' }}</p>
         <p class="muted">코드 {{ report.revision?.commit || '미확인' }}{{ report.revision?.modified ? ' · 로컬 수정 있음' : '' }}</p>
         <ul v-if="report.issues?.length"><li v-for="issue in report.issues" :key="issue">{{ issue }}</li></ul>
-        <p v-if="state?.mode === 'hardware' && !report.allow_motion">실물 동작 비활성 · 현장 설정 및 시험 실행부의 <code>--execute</code> 확인 필요</p>
+        <p v-if="state?.mode === 'hardware' && !report.allow_motion">실물 동작 비활성</p>
         <table v-if="report.checks?.length"><thead><tr><th>검사 항목</th><th>확인 수준</th></tr></thead><tbody><tr v-for="check in report.checks" :key="check.name"><td>{{ check.name }}</td><td>{{ check.state }}</td></tr></tbody></table>
-      </template>
+      </details>
       <div v-if="kind === 'PICK'" class="test-fields">
         <label>상품<select v-model="sku"><option value="" disabled>선택</option><option v-for="p in stock" :key="p.sku" :value="p.sku">{{ p.name }}</option></select></label>
         <label>바구니 배치<select v-model="robot"><option value="pinky-1">Pinky 1 기준</option><option value="pinky-2">Pinky 2 기준</option></select></label>
@@ -133,13 +133,13 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
         <label>현재 카트 상품 (1~3개)<select :value="''" @change="addSku(($event.target as HTMLSelectElement).value)"><option value="">상품 추가</option><option v-for="p in products" :key="p.sku" :value="p.sku">{{ p.name }}</option></select></label>
         <div class="button-row"><button v-for="(item, i) in handoffSkus" :key="i" class="secondary" @click="handoffSkus.splice(i, 1)">{{ products.find(p => p.sku === item)?.name }} × 제거</button></div>
       </template>
-      <label v-if="motion" class="check-line"><input v-model="prepared" type="checkbox" /> 바구니를 지정 위치에 고정하고 상품·작업 영역을 확인했습니다. Pinky 이동 명령은 보내지 않습니다.</label>
+      <label v-if="motion" class="check-line"><input v-model="prepared" type="checkbox" /> 바구니 고정 · 상품·작업 영역 준비 완료</label>
       <label v-if="motion && state?.mode === 'mock'" class="check-line"><input v-model="simulateFailure" type="checkbox" /> 이번 모의 동작에서 실패 응답 시험</label>
       <button class="primary" :disabled="busy || !!pending || !!connectionError || !state?.distributed || (motion && (!prepared || !report?.online || !report?.allow_motion || !!state?.hold))" @click="send()">{{ motion ? '선택한 동작 시험 요청' : '확인 요청' }}</button>
       <div v-if="pending" class="alert danger">이전 요청의 응답을 확인 중입니다. 같은 요청 ID로 재전송하면 중복 실행하지 않습니다. <button :disabled="busy" @click="send(true)">동일 요청 재전송</button></div>
     </div>
 
-    <section class="panel table-scroll"><h2>시험 명령 목록</h2><table><thead><tr><th>명령 ID</th><th>시험</th><th>상태</th><th>요청 시각</th></tr></thead><tbody><tr v-for="item in rows" :key="item.id"><td><button class="secondary" @click="choose(item.id)">{{ shortId(item.id) }}</button></td><td>{{ name(item.kind) }}</td><td>{{ name(item.status) }}</td><td>{{ timeText(item.created_at) }}</td></tr></tbody></table><p v-if="!rows.length">이 중계의 시험 기록이 없습니다.</p></section>
+    <section class="panel table-scroll"><h2>시험 명령 목록</h2><table><thead><tr><th>명령 ID</th><th>시험</th><th>상태</th><th>요청 시각</th></tr></thead><tbody><tr v-for="item in rows" :key="item.id"><td><button class="secondary" @click="choose(item.id)">{{ shortId(item.id) }}</button></td><td>{{ name(item.kind) }}</td><td>{{ name(item.status) }}</td><td>{{ timeText(item.created_at) }}</td></tr></tbody></table><p v-if="!rows.length">시험 이력 없음</p></section>
     <section v-if="job" class="panel">
       <div class="section-title"><h2>{{ job.node_id }} · {{ name(job.kind) }}</h2><span class="pill">{{ name(job.status) }}</span></div>
       <p><code>{{ job.id }}</code> · {{ job.mode.toUpperCase() }}</p>
@@ -157,14 +157,14 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
           <button :disabled="busy || !operator.trim() || !Object.values(facts).every(Boolean)" @click="action('observe', {operator, facts})">운영자 관측 전달</button>
           <p class="muted">실행부가 관측을 받은 뒤 ACT 대기 자세·정지 피드백을 확인합니다. 관측은 2초 이내 사용하며, 놓쳤다면 현재 상태를 다시 확인해 전달하세요.</p>
         </fieldset>
-        <fieldset v-if="['WAIT_REVIEW','UNCERTAIN'].includes(job.status)"><legend>시험 결과 확인 · 자동 성공 판정 아님</legend>
-          <label class="check-line"><input v-model="stopped" type="checkbox" /> 로봇의 실제 정지를 확인했습니다</label>
-          <label class="check-line"><input v-model="placed" type="checkbox" /> 지정 상품이 선택한 슬롯 또는 좌우 장바구니에 놓인 것을 확인했습니다</label>
-          <label v-if="job.status === 'UNCERTAIN'" class="check-line"><input v-model="processClosed" type="checkbox" /> 원래 시험 실행부를 종료했고 재실행되지 않음을 확인했습니다</label>
+        <fieldset v-if="['WAIT_REVIEW','UNCERTAIN'].includes(job.status)"><legend>운영자 결과 확인</legend>
+          <label class="check-line"><input v-model="stopped" type="checkbox" /> 실제 정지 확인</label>
+          <label class="check-line"><input v-model="placed" type="checkbox" /> 지정 슬롯·장바구니 상품 배치 확인</label>
+          <label v-if="job.status === 'UNCERTAIN'" class="check-line"><input v-model="processClosed" type="checkbox" /> 기존 실행부 종료 · 재실행 없음</label>
           <label>결과 메모<textarea v-model="note" maxlength="500" placeholder="실제로 확인한 결과나 실패 원인" /></label>
           <div class="button-row"><button :disabled="busy || !operator.trim() || !note.trim() || !stopped || !placed || job.status === 'UNCERTAIN' || job.result?.kind !== 'FINISHED' || !!job.stop_requested_at" @click="review(true)">작업 성공 확인 기록</button><button class="secondary" :disabled="busy || !operator.trim() || !note.trim() || !stopped" @click="review(false)">실패·중단 확인 기록</button></div>
         </fieldset>
-        <fieldset v-if="state?.hold === job.id && final(job.status)"><legend>시험 종료 후 원위치 확인</legend><label class="check-line"><input v-model="restored" type="checkbox" /> 실제 상품 수량·원위치와 작업 구역을 복구했습니다</label><button :disabled="busy || !restored || !operator.trim()" @click="action('release', {operator, restored})">시험 점유 해제</button></fieldset>
+        <fieldset v-if="state?.hold === job.id && final(job.status)"><legend>시험 종료 후 원위치 확인</legend><label class="check-line"><input v-model="restored" type="checkbox" /> 상품·장비·작업 구역 복구 완료</label><button :disabled="busy || !restored || !operator.trim()" @click="action('release', {operator, restored})">시험 점유 해제</button></fieldset>
       </template>
       <h3>명령·응답 타임라인</h3>
       <ol class="test-timeline"><li v-for="(entry, i) in job.timeline" :key="i"><strong>{{ timeText(entry.at) }} · {{ name(entry.kind) }}</strong><details><summary>상세 데이터</summary><pre>{{ JSON.stringify(entry.data, null, 2) }}</pre></details></li></ol>

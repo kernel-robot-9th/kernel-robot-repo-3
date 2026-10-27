@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from './api'
-const props = defineProps<{ token: string; feed: { id: string; label: string; owner: string; transport: string; whep_url?: string; read_user?: string; read_password?: string } }>()
+import Icon from './ui/Icon.vue'
+const props = defineProps<{ token: string; showTools?: boolean; feed: { id: string; label: string; owner: string; transport: string; whep_url?: string; read_user?: string; read_password?: string } }>()
 const image = ref(''), error = ref(''), age = ref<number | null>(null), video = ref<HTMLVideoElement | null>(null)
 const connecting = ref(false)
 const received = ref(false)
@@ -12,14 +13,14 @@ const mediaAuth = (): Record<string, string> => props.feed.read_user ? { Authori
 async function frame() {
   try {
     const response = await fetch('/api/admin/video/' + props.feed.id + '/frame', { headers: auth(), signal: AbortSignal.timeout(3000) })
-    if (!response.ok) throw new Error(response.status === 401 ? '인증 필요' : response.status === 503 && !received.value ? '첫 프레임 수신 대기 · 카메라 연결 확인 필요' : '영상 수신 끊김')
+    if (!response.ok) throw new Error(response.status === 401 ? '인증 필요' : props.feed.transport === 'mock' ? '모의 영상 수신 끊김' : response.status === 503 && !received.value ? '영상 대기' : '영상 수신 끊김')
     const blob = await response.blob()
     if (!alive) return
     const previous = image.value; image.value = URL.createObjectURL(blob)
     if (previous) URL.revokeObjectURL(previous)
     age.value = Number(response.headers.get('X-Frame-Age'))
     received.value = true
-    error.value = age.value >= 3 ? '프레임 갱신 지연 · 마지막 화면' : ''
+    error.value = age.value >= 3 ? '영상 지연 · 마지막 화면' : ''
   } catch (e) { if (alive) error.value = e instanceof Error ? e.message : '영상 확인 필요' }
   finally { if (alive) timer = setTimeout(frame, 500) }
 }
@@ -40,7 +41,7 @@ async function connect() {
     const peer = new RTCPeerConnection(); pc = peer
     peer.addTransceiver('video', { direction: 'recvonly' })
     peer.ontrack = event => { if (video.value) video.value.srcObject = new MediaStream([event.track]) }
-    peer.onconnectionstatechange = () => { if (alive && ['failed', 'disconnected'].includes(peer.connectionState)) error.value = '영상 연결 끊김 · 다시 연결 필요' }
+    peer.onconnectionstatechange = () => { if (alive && ['failed', 'disconnected'].includes(peer.connectionState)) error.value = '영상 연결 끊김' }
     await peer.setLocalDescription(await peer.createOffer())
     await new Promise<void>((resolve, reject) => {
       if (peer.iceGatheringState === 'complete') { resolve(); return }
@@ -71,7 +72,7 @@ async function statistics() {
           received.value = true
         }
       }
-      if (lastFrame) { age.value = (Date.now() - lastFrame) / 1000; if (age.value >= 3) error.value = '프레임 갱신 지연 · 마지막 화면' }
+      if (lastFrame) { age.value = (Date.now() - lastFrame) / 1000; if (age.value >= 3) error.value = '영상 지연 · 마지막 화면' }
     } catch { error.value = '영상 상태 조회 실패' }
   }
   if (alive) timer = setTimeout(statistics, 1000)
@@ -85,13 +86,13 @@ onUnmounted(() => { alive = false; if (timer) clearTimeout(timer); if (image.val
 </script>
 <template>
   <article class="panel video-tile">
-    <div class="section-title"><h2>{{ feed.label }}</h2><span class="pill">{{ feed.transport === 'mock' ? '가상 영상' : received ? '카메라 영상' : '수신 대기' }}</span></div>
+    <div class="section-title"><h2>{{ feed.label }}</h2><span class="pill" :class="{bad: received && error}">{{ feed.transport === 'mock' ? '모의' : received && error ? '수신 지연' : received ? '수신 중' : '수신 대기' }}</span></div>
     <video v-if="feed.transport === 'webrtc'" ref="video" autoplay muted playsinline></video>
     <img v-else-if="image" :src="image" :alt="feed.label + ' 영상'" />
-    <div v-else class="video-placeholder">영상 수신 대기</div>
-    <p :class="error ? 'video-error' : 'muted'" role="status">{{ error || (received ? '프레임 수신 중' : '첫 프레임 수신 대기') }} <span v-if="age !== null">· 갱신 경과 {{ age.toFixed(1) }}초</span></p>
-    <small>{{ feed.owner }} · 영상 상태는 로봇 정지·작업 완료 판정과 별도입니다.</small>
-    <div v-if="feed.transport === 'mock'" class="button-row"><button @click="fault('freeze')">정지 화면 시험</button><button @click="fault('offline')">끊김 시험</button><button @click="fault('none')">복구</button></div>
+    <div v-else class="video-placeholder"><Icon name="camera" :size="36" /><strong>영상 대기</strong></div>
+    <p v-if="error" class="video-error" role="status">{{ error }}</p>
+    <details v-if="showTools" class="video-details"><summary>수신 정보</summary><small>{{ feed.owner }} · {{ age === null ? '대기' : age.toFixed(1) + '초 전' }}</small></details>
+    <div v-if="showTools && feed.transport === 'mock'" class="button-row"><button @click="fault('freeze')">정지 화면 시험</button><button @click="fault('offline')">끊김 시험</button><button @click="fault('none')">복구</button></div>
     <button v-else-if="feed.transport === 'webrtc'" :disabled="connecting" @click="connect">영상 다시 연결</button>
   </article>
 </template>

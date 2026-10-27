@@ -5,7 +5,7 @@ export interface Product {
   stock: { on_hand: number; reserved: number } | null; available: number | null;
 }
 export interface Item { sku: string; slot: number; item_id: string }
-export interface InventoryItem extends Item { delivered: boolean; load_command_id: string; handoff_command_id: string | null }
+export interface InventoryItem extends Item { physical_loading_confirmed?: boolean; physical_delivery_confirmed?: boolean; delivered: boolean; load_command_id: string; handoff_command_id: string | null }
 export interface Session {
   id: string; label: string; robot_id: string; basket_id: string; state: string; checkout_requested: boolean;
   current_task: string | null; inventory: InventoryItem[]; error: string | null;
@@ -18,11 +18,13 @@ export interface Task {
   device_id: string; items: Item[]; state: string; stopped_at: number | null; arm_clear: boolean;
 }
 export interface Command {
+  robot_id: string;
   id: string; task_id: string; session_id: string; device_id: string; kind: string; status: string;
   sent_at: number | null; accepted_at: number | null;
   result: { kind: string; data: Record<string, unknown> } | null;
 }
 export interface Snapshot {
+  hardware_motion?: Record<string, FieldMotionStatus>;
   motion_backend?: string; route_version?: number;
   run_id: string; mode: 'mock' | 'hardware'; test_only: boolean; test_hold: string | null; sessions: Record<string, Session>; orders: Record<string, Order>;
   tasks: Record<string, Task>; commands: Record<string, Command>;
@@ -39,4 +41,16 @@ export interface Snapshot {
 export interface Audit {
   seq: number; at: number; kind: string; session_id: string | null; task_id: string | null;
   command_id: string | null; mode: string; detail: Record<string, unknown>;
+}
+export interface FieldMotionStatus {
+  robot_id?: string; command_id?: string; task_id?: string; device_id?: string;
+  kind?: string; zone_id?: string; stage?: string;
+  updated_at?: number; received_at?: number; reporting?: boolean; error?: string | null;
+  inspection_reporting?: boolean; inspection_received_at?: number;
+  marker_id?: number | null; marker_visible?: boolean; result_file?: string;
+  parking_error?: { distance_mm?: number; distance_marker_widths: number; yaw_error: number } | null;
+  inspection?: { connected: boolean; error?: string; observation?: {
+    pose: { x: number; y: number; yaw: number }; observed_at: number; velocity?: { linear: number; angular: number } | null;
+  } };
+  result?: Record<string, unknown>;
 }

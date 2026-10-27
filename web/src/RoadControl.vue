@@ -43,13 +43,12 @@ void refresh()
 
 <template>
   <section class="road-panel panel">
-    <div class="road-heading"><div><span class="badge">MOCK · 경로 기준 재생</span><h2>Pinky 주문·이동 통합 · v4</h2>
-      <p>적재 A → 적재 B → 인계 → 대기 복귀. 필요한 적재장만 방문하며 한 번에 한 대가 이동합니다.</p></div>
+    <div class="road-heading"><span class="badge">모의 · v4</span>
       <button @click="download" :disabled="!road">실행 기록 저장</button></div>
-    <p class="muted">두 로봇의 주문은 함께 처리하며, 정차한 로봇의 팔 작업과 다른 로봇의 이동은 병행합니다. 표시 위치는 기준 경로 계산값입니다. 카메라 실측·실물 정밀 주차·물리 시뮬레이션 검증 결과가 아닙니다.</p>
-    <div v-if="connectionError||error||road?.blocked" class="alert danger" role="alert">{{ connectionError||error||road?.blocked }}<p>통신 미확인·중지 요청은 실제 정지 완료를 의미하지 않습니다. 마지막 위치와 점유를 유지합니다.</p></div>
-    <div class="button-row"><a href="/shop" target="_blank" rel="noopener">고객 주문 화면 ↗</a>
-      <button @click="emit('overview')">고객 장바구니 준비 확인</button>
+
+    <div v-if="connectionError||error||road?.blocked" class="alert danger" role="alert">{{ connectionError||error||road?.blocked }}<p>정지 미확인 · 점유 유지</p></div>
+    <div class="button-row"><a href="/shop" target="_blank" rel="noopener">고객 화면 ↗</a>
+      <button @click="emit('overview')">장바구니 준비</button>
       <button :disabled="busy||!!road?.blocked" @click="act('/admin/mock/steps',{count:20})">모의 팔 작업 20단계</button>
       <button :disabled="busy||!road?.active||!!road?.blocked" @click="act('/admin/road/stop')">이동 중지 요청</button>
       <button :disabled="busy||!!road?.blocked||road?.fail_next" @click="act('/admin/road/failure')">다음 이동 실패 주입</button></div>
@@ -70,15 +69,15 @@ void refresh()
           <text :x="r.pose[0]*500" :y="-r.pose[1]*500+53" text-anchor="middle">{{rid}}</text>
         </g>
         <text x="960" y="730" text-anchor="end">2.0 × 1.5 m · 후면 바구니 포함</text>
-      </svg><p class="muted">{{road.frame_id}} · 출처 {{road.source_hash.slice(0,12)}} · 위치 관측과 주문 명령을 연결해 기록</p></div>
+      </svg><details><summary>맵 정보</summary><small>{{road.frame_id}} · {{road.source_hash.slice(0,12)}} · 기준 경로 계산값</small></details></div>
       <div class="road-details"><article v-for="(r,rid) in road.robots" :key="rid" class="road-card">
         <strong>{{rid}} · {{r.session_id?state.sessions[r.session_id]?.label:'배정 없음'}}</strong>
         <p>{{active?.robot_id===rid?(active.status==='RUNNING'?'모의 이동 중':'이동 점유 유지 · '+label(active.status))+' · '+active.parameters.route_id:location(r.location)}}</p>
-        <p>{{road.waiting[rid]||'현재 작업 진행 조건 확인'}}</p>
-        <small>마지막 기준 위치 수신 {{r.age_seconds===null?'없음':r.age_seconds.toFixed(1)+'초 전'}} · 현재 측정 위치가 아님</small>
+        <p>{{road.waiting[rid]||'대기'}}</p>
+        <small>모의 위치 · {{r.age_seconds===null?'미수신':r.age_seconds.toFixed(1)+'초 전'}}</small>
       </article>
       <article class="road-card"><strong>점유 구역</strong><p v-for="(z,name) in state.zones" :key="name">{{name}} · {{z.owner?shortId(z.owner):'비어 있음'}}</p>
-        <small>작업장 간 이동은 양쪽 점유를 유지하다 도착 확인 후 출발 구역을 해제합니다. 인계장은 대기 구역 복귀까지 유지합니다.</small></article></div>
+        </article></div>
     </div>
     <div v-if="job" class="road-card"><label>이동 기록 <select v-model="selected"><option value="">현재 / 최근 이동</option><option v-for="j in jobs" :key="j.id" :value="j.id">{{j.robot_id}} · {{j.parameters.route_id}} · {{label(j.status)}}</option></select></label>
       <p>{{purpose(job.purpose)}} · {{label(job.status)}} · {{Math.round((job.telemetry?.progress||0)*100)}}%</p>

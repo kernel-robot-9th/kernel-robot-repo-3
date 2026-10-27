@@ -1,0 +1,11 @@
+route_server:
+  ros__parameters:
+    route_frame: map
+    global_frame: map
+    base_frame: base_footprint
+    graph_filepath: /home/pinky/cartrina-field/pinky-route-server.geojson
+    path_density: 0.01
+    smooth_corners: false
+    edge_cost_functions: [DistanceScorer]
+    DistanceScorer:
+      plugin: nav2_route::DistanceScorer
