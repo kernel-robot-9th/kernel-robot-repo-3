@@ -1,19 +1,23 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
-import { onMounted, ref } from 'vue'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import Icon from './ui/Icon.vue'
 import { api, usePolling } from './api'
 const mode = ref('unknown')
+const route = useRoute()
+const isAdmin = computed(() => route.path.startsWith('/admin'))
 const testOnly = ref(false)
 const { refresh } = usePolling(async () => { try { const health = await api<{mode: string; test_only: boolean}>('/health'); mode.value = health.mode; testOnly.value = health.test_only } catch { mode.value = 'unknown' } })
 onMounted(refresh)
 </script>
 
 <template>
-  <div class="mock-strip"><strong>{{ mode === 'mock' ? 'MOCK · 모의 장비' : mode === 'hardware' ? 'HARDWARE · 현장 연결 모드' : '장비 모드 확인 필요' }}{{ testOnly ? ' · 현장 설정·장비 검사' : '' }}</strong><span>{{ mode === 'mock' ? '모의 성공은 실제 로봇 검증을 뜻하지 않습니다.' : '명령 수락·결과·정지 확인을 구분해 표시합니다.' }}</span></div>
+  <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
+  <div class="app-frame" :class="{ 'operations-app': isAdmin }">
   <header class="site-header">
-    <RouterLink class="brand" to="/shop"><span class="brand-icon">P</span><span>쇼핑키프로<small>ROBOT SHOPPING LAB</small></span></RouterLink>
-    <nav aria-label="화면 선택"><RouterLink to="/shop">고객 화면</RouterLink><RouterLink to="/admin">관리자</RouterLink></nav>
+    <div class="brand-group"><RouterLink class="brand" :to="isAdmin ? '/admin/overview' : '/shop'"><span class="brand-icon"><Icon name="robot" :size="25" /></span><span>쇼핑키프로</span></RouterLink><span class="mode-badge" role="status"><span class="mode-dot" :class="{mock: mode === 'mock'}"></span>{{ mode === 'unknown' ? '모드 미확인' : testOnly ? '장비 검사' : mode === 'mock' ? '모의' : '현장' }}</span></div>
+    <nav aria-label="화면 선택"><RouterLink to="/shop" :aria-current="!isAdmin ? 'page' : undefined">고객 화면</RouterLink><RouterLink to="/admin/overview" :class="{ 'router-link-active': isAdmin }" :aria-current="isAdmin ? 'page' : undefined">관리자</RouterLink></nav>
   </header>
   <RouterView />
-  <footer class="site-footer">SR-01~14 기본 흐름 개발 · 고객 수령 확인(SR-29)은 별도 옵션입니다.</footer>
+  </div>
 </template>

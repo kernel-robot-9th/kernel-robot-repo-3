@@ -19,7 +19,7 @@ export async function api<T>(path: string, token = '', body?: unknown): Promise<
     signal: AbortSignal.timeout(5000),
   })
   const data = await response.json()
-  if (!response.ok) throw new ApiError(typeof data.detail === 'string' ? data.detail : '입력 내용을 확인하세요.', response.status)
+  if (!response.ok) throw new ApiError(typeof data.detail === 'string' ? data.detail : '입력 오류', response.status)
   return data as T
 }
 
@@ -47,18 +47,18 @@ export function usePolling(load: () => Promise<void>) {
 }
 
 export const labels: Record<string, string> = {
-  TRANSFERRING: '다음 작업장 이동 · 출발 구역 점유 유지', RUNNING: '실행 중',
-  WAIT_POLICY_STOP: '정책 중지·실제 정지 확인 대기', STOP_POLICY: '정책 출력 중지·자세 유지', TRANSFERRED: '상품 인계 확인 · 정지 대기',
-  SHOPPING: '쇼핑 중', CHECKOUT_REQUESTED: '주문 마감 · 적재 처리 중', DELIVERING: '고객 인계 준비',
-  COMPLETED: '쇼핑 완료', ERROR: '작업 중단', RECOVERY_REQUIRED: '복구 확인 필요',
-  QUEUED: '작업 대기', WAIT_ZONE: '구역 사용 대기', MOVING: '적재·인계 지점 이동',
-  WAIT_STOP: '정차 확인 대기', WAIT_BASKET: '고객 장바구니 준비 대기', ARM_WORK: '로봇팔 작업',
+  TRANSFERRING: '다음 구역 이동', RUNNING: '실행 중',
+  WAIT_POLICY_STOP: '정지 확인 대기', STOP_POLICY: '정책 중지', TRANSFERRED: '인계 확인 · 정지 대기',
+  SHOPPING: '쇼핑 중', CHECKOUT_REQUESTED: '주문 마감', DELIVERING: '인계 준비',
+  COMPLETED: '시연 흐름 완료', ERROR: '작업 중단', RECOVERY_REQUIRED: '복구 확인 필요',
+  QUEUED: '작업 대기', WAIT_ZONE: '구역 사용 대기', MOVING: '이동 중',
+  WAIT_STOP: '정차 확인 대기', WAIT_BASKET: '장바구니 대기', ARM_WORK: '로봇팔 작업',
   WAIT_ARM_CLEAR: '팔 이탈 확인 대기', LEAVING: '구역에서 이동', WAIT_EXIT: '구역 이탈 확인 대기', DONE: '작업 완료',
   NAVIGATE: '지점 이동', PICK: '집기·적재', HANDOFF: '고객 인계', LEAVE: '구역 출발', STOP: '중단 요청', LOAD: '적재',
-  CREATED: '전송 대기', SENT: '전송됨', ACCEPTED: '수락됨', SUCCEEDED: '성공 보고', FAILED: '실패 보고',
+  CREATED: '전송 대기', SENT: '전송됨', ACCEPTED: '수락됨', SUCCEEDED: '실행 완료', FAILED: '실패 보고',
   UNCERTAIN: '결과 불명', CANCELLED: '전송 취소',
 }
 export const label = (value: string) => labels[value] || value
-export const zoneName = (value: string) => ({ 'load-a': '상차 A', 'load-b': '상차 B', handoff: '공용 인계' }[value] || value)
+export const zoneName = (value: string) => ({ 'load-a': '적재 A', 'load-b': '적재 B', handoff: '하역' }[value] || value)
 export const shortId = (value: string | null) => value ? value.slice(0, 8) : '—'
 export const timeText = (value: number | null) => value ? new Date(value * 1000).toLocaleTimeString('ko-KR') : '—'

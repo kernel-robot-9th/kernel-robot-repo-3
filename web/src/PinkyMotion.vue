@@ -98,9 +98,9 @@ function clearPending() {
 
 <template>
   <section class="pinky-motion">
-    <div class="section-title"><div><p class="eyebrow">PINKY · ROUTE V3</p><h2>이동 경로 테스트</h2></div><span class="pill">모의 · 도로 기준 이동</span></div>
-    <p class="motion-description">한 대의 이동·중지·실패를 확인합니다. 시험마다 선택 경로의 시작점에서 출발합니다. 실물 주행·바퀴 물리 추종·정밀주차 검증은 별도입니다.</p>
-    <div v-if="error || connectionError" class="alert danger" role="alert">{{ error || connectionError }}<p>마지막 위치를 표시합니다. 통신 실패는 정지 확인을 뜻하지 않습니다.</p></div>
+    <div class="section-title"><h2>이동 시험</h2><span class="pill">모의 · v3</span></div>
+
+    <div v-if="error || connectionError" class="alert danger" role="alert">{{ error || connectionError }}<p>마지막 위치 · 정지 미확인</p></div>
     <div class="motion-grid">
       <article class="panel motion-map">
         <div class="section-title"><strong>{{ shownRoute ? routeName(job?.parameters.route_id || routeId) : '도로 불러오는 중' }}</strong><span class="pill" :class="{bad: stale}">{{ stale ? '위치 갱신 없음' : sample ? (final(job?.status || '') ? '시험 마지막 위치' : '모의 위치 수신') : '시작 위치 미리보기' }}</span></div>
@@ -121,18 +121,18 @@ function clearPending() {
           <text v-if="pose" :x="pose[0]*500" :y="-pose[1]*500-45" text-anchor="middle" font-size="18">{{ job?.robot_id || robot }}</text>
         </svg>
         <div class="motion-legend"><span>초록: 전진</span><span>주황: 후진</span><span>분홍: Pinky / 노랑: 후면 바구니</span></div>
-        <p class="muted">한 번에 한 시험만 실행합니다. 두 대의 통행·합류·대기줄 제어는 다음 단계입니다.</p>
+
       </article>
       <article class="panel motion-inputs">
-        <h3>이동 요청</h3><p :class="{ 'video-error': !ready }">{{ ready ? '중계 A · 도로 v3 실행 준비됨' : '모의 중계 A의 도로 v3 준비 상태를 기다립니다' }}</p>
+        <h3>이동 요청</h3><p :class="{ 'video-error': !ready }">{{ ready ? '시험 준비됨' : '시험 준비 대기' }}</p>
         <label for="motion-robot">시험 로봇</label><select id="motion-robot" v-model="robot" :disabled="!!state?.hold" @change="selected=''"><option>pinky-1</option><option>pinky-2</option></select>
         <label for="motion-route">경로</label><select id="motion-route" v-model="routeId" :disabled="!!state?.hold" @change="selected=''"><option v-for="(_,id) in map?.routes || {}" :key="id" :value="id">{{ routeName(String(id)) }}</option></select>
         <label for="motion-rate">재생 배속</label><select id="motion-rate" v-model="rate"><option :value="1">1배</option><option :value="2">2배</option><option :value="4">4배</option></select>
-        <small v-if="shownRoute">기준 경로 시간 {{ shownRoute.duration.toFixed(1) }}초 · 실물 소요시간 아님</small>
+        <small v-if="shownRoute">모의 경로 {{ shownRoute.duration.toFixed(1) }}초</small>
         <label class="motion-check"><input type="checkbox" v-model="fail"/> 경로 30% 지점에서 모의 실패</label>
         <button class="primary" :disabled="busy || !ready || !!state?.hold || !!pending || !!connectionError" @click="send()">이동 요청</button>
-        <p v-if="state?.hold" class="muted">시험 점유 중 · 종료·정지 확인 후 해제해야 다음 요청이 가능합니다.</p>
-        <div v-if="pending" class="alert danger"><p>요청 응답 미확인 · 같은 요청 ID로 재확인합니다.</p><button :disabled="busy" @click="send(true)">같은 요청 재전송</button><button class="secondary" @click="clearPending">이력 확인 후 요청 해제</button></div>
+        <p v-if="state?.hold" class="muted">시험 점유 중</p>
+        <div v-if="pending" class="alert danger"><p>요청 응답 미확인</p><button :disabled="busy" @click="send(true)">같은 요청 재전송</button><button class="secondary" @click="clearPending">이력 확인 후 요청 해제</button></div>
       </article>
     </div>
     <article v-if="job" class="panel">
@@ -141,10 +141,10 @@ function clearPending() {
       <progress :value="sample?.progress || 0" max="1" aria-label="이동 진행률"></progress>
       <p v-if="sample">진행 {{ (sample.progress*100).toFixed(0) }}% · X {{ sample.pose[0].toFixed(3) }}m / Y {{ sample.pose[1].toFixed(3) }}m / 방향 {{ (sample.pose[2]*180/Math.PI).toFixed(1) }}° · 시뮬 {{ sample.sim_time.toFixed(1) }}초</p>
       <div class="button-row"><button class="danger-button" :disabled="busy || final(job.status) || !!job.stop_requested_at" @click="action('stop')">중지 요청</button><button :disabled="busy || !final(job.status) || !job.stopped || state?.hold !== job.id" @click="action('release',{operator:'reference-ui',restored:true})">종료된 모의 시험 해제</button></div>
-      <div v-if="job.status === 'UNCERTAIN'" class="alert danger"><p>결과가 불명확합니다. 원래 모의 실행부를 종료하고 재실행되지 않는지 확인하세요. 성공으로 복구하지 않습니다.</p><label>확인자<input v-model="operator"/></label><label class="motion-check"><input type="checkbox" v-model="closed"/> 원래 모의 실행부 종료 확인</label><button :disabled="busy || !closed || !operator.trim()" @click="action('review',{operator,success:false,stopped:true,process_closed:true,note:'원래 모의 실행부 종료 후 실패로 복구'})">실패로 정리</button></div>
+      <div v-if="job.status === 'UNCERTAIN'" class="alert danger"><p>결과 미확인 · 기존 실행부 종료 필요</p><label>확인자<input v-model="operator"/></label><label class="motion-check"><input type="checkbox" v-model="closed"/> 기존 실행부 종료 확인</label><button :disabled="busy || !closed || !operator.trim()" @click="action('review',{operator,success:false,stopped:true,process_closed:true,note:'원래 모의 실행부 종료 후 실패로 복구'})">실패로 정리</button></div>
       <div class="table-scroll"><table><thead><tr><th>시각</th><th>이벤트</th><th>내용</th></tr></thead><tbody><tr v-for="(entry,i) in [...job.timeline].reverse()" :key="i"><td>{{ timeText(entry.at) }}</td><td>{{ names[entry.kind] || entry.kind }}</td><td><code>{{ JSON.stringify(entry.data) }}</code></td></tr></tbody></table></div>
     </article>
-    <article class="panel"><h3>이동 시험 이력</h3><p v-if="!rows.length" class="muted">이동 요청을 보내면 명령·수신·진행·결과가 기록됩니다.</p><div class="motion-history"><button v-for="r in rows" :key="r.id" :class="{active:selected===r.id}" @click="selected=r.id">{{ r.robot_id }} · {{ routeName(r.parameters.route_id) }} · {{ names[r.status] || r.status }} · {{ shortId(r.id) }}</button></div></article>
+    <article class="panel"><h3>이동 시험 이력</h3><p v-if="!rows.length" class="muted">이동 이력 없음</p><div class="motion-history"><button v-for="r in rows" :key="r.id" :class="{active:selected===r.id}" @click="selected=r.id">{{ r.robot_id }} · {{ routeName(r.parameters.route_id) }} · {{ names[r.status] || r.status }} · {{ shortId(r.id) }}</button></div></article>
   </section>
 </template>
 
