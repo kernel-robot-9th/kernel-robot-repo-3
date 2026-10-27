@@ -1,0 +1,23 @@
+{
+  "targets_file": "runtime/field/pinky-parking/targets.json",
+  "geometry_file": "runtime/field/pinky-parking/geometry.json",
+  "observation_file": "runtime/field/pinky-parking/observations.json",
+  "runs_directory": "runtime/field/pinky-parking/runs",
+  "zones": {
+    "A": {"gateway_config": "runtime/field/gateway-a.hardware.json"},
+    "B": {"gateway_config": "runtime/field/gateway-b.hardware.json"},
+    "C": {"gateway_config": "runtime/field/gateway-c.hardware.json"}
+  },
+  "robot_profiles": {
+    "P1": "runtime/field/pinky-mobile.json",
+    "P2": "runtime/field/pinky-mobile-p2.json"
+  },
+  "control": {
+    "linear_speed_mps": 0.02,
+    "angular_speed_rps": 0.3,
+    "heading_gain": 1.2,
+    "position_tolerance_mm": 5.0,
+    "virtual_goal_offset_mm": 25.0,
+    "yaw_tolerance_deg": 2.0
+  }
+}
