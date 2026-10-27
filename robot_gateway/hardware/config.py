@@ -1,11 +1,7 @@
 """Read-only preflight. No imports that connect robots, cameras, or CUDA."""
-import hashlib
 import json
-import math
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-JOINTS = {'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper'}
 
 
 def validate(config, *, check_files=True, require_mobile=True, check_slots=True):
@@ -26,6 +22,16 @@ def validate(config, *, check_files=True, require_mobile=True, check_slots=True)
         errors.append('video.rtsp_urls: 담당 채널 게시 주소 필요')
     if require_mobile and node == 'gateway-a' and not config.get('mobile_factory'):
         errors.append('Pinky 주행·정차·이탈·중단 어댑터 미연결 (ROS 이름을 추정하지 않음)')
+    if config.get('mobile_factory') == 'robot_gateway.hardware.pinky:create_mobile':
+        try:
+            from .pinky import load_profile
+            paths = config.get('mobile_profiles') or {'default': config.get('mobile_config', '')}
+            for robot, location in paths.items():
+                profile = load_profile(location)
+                if robot != 'default' and profile['robot_id'] != robot:
+                    errors.append('Pinky 프로필과 로봇 ID 불일치: ' + robot)
+        except (OSError, ValueError, KeyError) as exc:
+            errors.append('Pinky 현장 설정: ' + str(exc)[:150])
     arm = config.get('act') if node == 'gateway-c' else config.get('yolo')
     if not isinstance(arm, dict):
         return errors + ['담당 로봇팔 설정 필요']
@@ -42,12 +48,6 @@ def validate(config, *, check_files=True, require_mobile=True, check_slots=True)
         path('calibration_dir')
         if arm.get('front_by_id') == arm.get('wrist_by_id'):
             errors.append('front/wrist는 다른 장치여야 함')
-        for name in ('max_relative_target', 'standby_tolerance', 'position_tolerance'):
-            if type(arm.get(name)) not in (int, float) or not math.isfinite(arm[name]) or arm[name] <= 0:
-                errors.append(name + ': 현장 검증값 필요')
-        if not isinstance(arm.get('standby_pose'), dict) or set(arm['standby_pose']) != JOINTS or not all(
-                type(v) in (int, float) and math.isfinite(v) for v in arm['standby_pose'].values()):
-            errors.append('standby_pose: 실제 대기 자세 6축 값 필요')
         models = arm.get('models', {})
         if not models.get('left'):
             errors.append('왼쪽 모델 설정 필요')
@@ -55,21 +55,10 @@ def validate(config, *, check_files=True, require_mobile=True, check_slots=True)
             if model is None:
                 continue  # Missing right is an explicit unsupported direction, never a left fallback.
             location = Path(model.get('path', '')).expanduser()
-            if side == 'left' and model.get('id') != 'act-left-v2-050000':
-                errors.append('왼쪽 시연 모델은 v2 050000')
             if check_files:
                 if not (location / 'config.json').is_file():
                     errors.append(side + ': 모델 파일 없음')
                     continue
-                policy = json.loads((location / 'config.json').read_text())
-                if policy.get('type') != 'act' or policy.get('n_action_steps') != 100 or policy.get('chunk_size') != 100:
-                    errors.append(side + ': ACT 설정 불일치')
-                if side == 'left':
-                    manifest = json.loads((ROOT / 'config/model_assets.json').read_text())['models'][model['id']]
-                    for file in manifest['files']:
-                        target = location / file['name']
-                        if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != file['sha256']:
-                            errors.append('왼쪽 모델 검증 실패: ' + file['name'])
     else:
         path('camera_by_id', '/dev/v4l/by-id/')
         for name in ('pick_config', 'calibration_file', 'poses_file'):

@@ -46,6 +46,15 @@ class NodeConnection(Input):
     role: Literal['control', 'test'] = 'control'
 
 
+class NodeHeartbeat(NodeConnection):
+    motion: dict = Field(default_factory=dict)
+
+
+class FieldObservation(Input):
+    observation: str = Field(min_length=1, max_length=40)
+    operator: str = Field(default='현장 운영자', min_length=1, max_length=80, pattern=r'\S')
+
+
 class TestRequest(Input):
     node_id: Literal['gateway-a', 'gateway-b', 'gateway-c']
     kind: Literal['PING', 'INSPECT', 'PICK', 'HANDOFF', 'NAVIGATE']
@@ -188,7 +197,8 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         async def monitor():
             while True:
                 await asyncio.sleep(1)
-                app.state.engine.watchdog()
+                if isinstance(app.state.engine, ReferenceEngine):
+                    app.state.engine.watchdog()
                 Bench(app.state.engine).watchdog()
 
         monitor_task = asyncio.create_task(monitor())
@@ -287,6 +297,18 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     @app.get("/api/admin/logs", dependencies=[Depends(admin)])
     def logs(e=Depends(control)):
         return {"items": e.logs()}
+
+    @app.post('/api/admin/field/commands/{command_id}/observe', dependencies=[Depends(admin)])
+    def field_observe(command_id: str, body: FieldObservation, e=Depends(control)):
+        if not isinstance(e, DistributedEngine):
+            raise HTTPException(409, '분산 중계 연결이 필요합니다')
+        return e.field_observe(command_id, body.observation, body.operator)
+
+    @app.post('/api/admin/field/robots/{robot_id}/stop', dependencies=[Depends(admin)])
+    def field_stop(robot_id: str, e=Depends(control)):
+        if not isinstance(e, DistributedEngine):
+            raise HTTPException(409, '분산 중계 연결이 필요합니다')
+        return e.field_stop(robot_id)
 
     @app.get('/api/admin/device-tests', dependencies=[Depends(admin)])
     def tests(e=Depends(control)):
@@ -450,11 +472,14 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         return {"fail": e.consume_failure(body.device_id)}
 
     @app.post("/api/nodes/heartbeat")
-    def node_heartbeat(body: NodeConnection, principal=Depends(node_auth), e=Depends(control)):
+    def node_heartbeat(body: NodeHeartbeat, principal=Depends(node_auth), e=Depends(control)):
         owned(body, principal)
         if body.mode != e.mode:
             raise HTTPException(409, '중계와 중앙의 장비 모드가 다릅니다')
-        return e.node_heartbeat(body.node_id, body.instance_id, body.role)
+        result = e.node_heartbeat(body.node_id, body.instance_id, body.role)
+        if body.motion:
+            e.report_motion(body.node_id, body.instance_id, body.motion)
+        return result
 
     @app.post("/api/nodes/commands/claim")
     def node_claim(body: NodeConnection, principal=Depends(node_auth), e=Depends(control)):

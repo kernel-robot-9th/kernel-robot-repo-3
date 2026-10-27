@@ -91,7 +91,7 @@ class ReferenceEngine(DistributedEngine):
                     self.state['robots'][session['robot_id']]['session_id'] = None
             if session['current_task']:
                 task = self.state['tasks'][session['current_task']]
-                if task['state'] in {'WAIT_STOP','WAIT_BASKET'} and self._fresh_observation(task['stopped_at']):
+                if task['state'] in {'WAIT_STOP','WAIT_BASKET'} and self._observed(task['stopped_at']):
                     if task['kind'] == 'HANDOFF' and not self._ready(task):
                         task['state'] = 'WAIT_BASKET'
                     elif self.state['devices'][task['device_id']]['connected']:
@@ -152,7 +152,7 @@ class ReferenceEngine(DistributedEngine):
             if origin and origin['zone_id'] == target_task['zone_id']:
                 # Multiple orders in one frozen trip may share the same station.
                 # Carry the original parking evidence, never refresh its timestamp.
-                if not self._fresh_observation(origin['stopped_at']):
+                if not self._observed(origin['stopped_at']):
                     self._fault(origin, '같은 적재장 후속 작업의 정차 관측 만료')
                     return
                 self._finish_origin(origin, moved=False)
@@ -400,11 +400,10 @@ class ReferenceEngine(DistributedEngine):
 
     @atomic
     def watchdog(self):
-        DistributedEngine.watchdog.__wrapped__(self)
         for session in self.state['sessions'].values():
             task = self.state['tasks'].get(session['current_task'])
             if (task and task['state'] in {'WAIT_STOP','WAIT_BASKET'} and task['stopped_at'] is not None
-                    and not self._fresh_observation(task['stopped_at'])):
+                    and not self._observed(task['stopped_at'])):
                 self._fault(task, '모의 정차 관측 유효기간 만료: 위치를 다시 확인해야 합니다')
         road = self.state['road']; job = road['jobs'].get(road['active'])
         if not job or job['status'] in FINAL or road['blocked']: return

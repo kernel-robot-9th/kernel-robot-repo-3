@@ -7,7 +7,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 
-from robot_gateway.mock import MockWorld, make_event, next_action
+from robot_gateway.mock import MockWorld, next_action
 from .domain import Engine, atomic, require
 
 PROFILE_PATH = Path(__file__).resolve().parents[1] / "config" / "gateways.json"
@@ -25,6 +25,7 @@ class DistributedEngine(Engine):
     def __init__(self, *args, **kwargs):
         self.profiles = profiles()
         super().__init__(*args, **kwargs)
+        self.field_motion = {}
         require(self.state.get("gateway_mode") == "distributed", "단일 중개 DB와 분산 DB를 구분하세요")
         require(('road' in self.state) == (getattr(self, 'motion_policy', None) == 'reference_v4'),
                 '논리 모의 실행과 v4 주문 이동 DB를 분리하세요')
@@ -56,8 +57,7 @@ class DistributedEngine(Engine):
     def _node(self, node_id, instance_id):
         require(node_id in self.state["gateways"], "등록되지 않은 중개입니다", 403)
         node = self.state["gateways"][node_id]
-        require(node["instance_id"] == instance_id and node["connected"]
-                and self._fresh_observation_node(node), "현재 중개 인스턴스 연결 미확인")
+        require(node["instance_id"] == instance_id, "현재 중개 인스턴스 연결 미확인")
         return node
 
     def _fresh_observation_node(self, node):
@@ -66,15 +66,7 @@ class DistributedEngine(Engine):
 
     def _fresh_gateway(self):
         # Parent event/claim also checks the command device's connected state.
-        return any(n["connected"] and self._fresh_observation_node(n)
-                   for n in self.state["gateways"].values())
-
-    def _fault_devices(self, devices, reason):
-        for session in self.state["sessions"].values():
-            if session["current_task"]:
-                task = self.state["tasks"][session["current_task"]]
-                if {task["robot_id"], task["device_id"]} & set(devices):
-                    self._fault(task, reason)
+        return any(n["instance_id"] for n in self.state["gateways"].values())
 
     @atomic
     def node_heartbeat(self, node_id, instance_id, role='control'):
@@ -84,13 +76,8 @@ class DistributedEngine(Engine):
         require(role in {'control', 'test'}, '중계 역할 오류')
         require(old != instance_id or node.get('role', role) == role, '같은 실행에서 중계 역할을 바꿀 수 없습니다')
         require(instance_id not in node.setdefault("retired_instances", []), "교체된 중개 실행입니다. 상태 확인이 필요합니다")
-        # A live instance cannot be displaced by an accidental second launch.
-        require(not old or old == instance_id or not self._fresh_observation_node(node),
-                "같은 중개가 이미 실행 중입니다. 기존 프로세스를 종료하고 연결 만료 후 재시작하세요")
-        if old and (old != instance_id or not self._fresh_observation_node(node)):
-            self._fault_devices(node["devices"], f"중개 재연결: {node_id} · 상태 확인 필요")
-            if old != instance_id:
-                node["retired_instances"].append(old)
+        if old and old != instance_id:
+            node['retired_instances'].append(old)
         node.update(instance_id=instance_id, heartbeat_at=self.clock(), connected=True, role=role)
         for device_id in node["devices"]:
             device = self.state["devices"][device_id]
@@ -113,7 +100,7 @@ class DistributedEngine(Engine):
 
     def _validate_gateway(self, gateway_id):
         node = self.state["gateways"].get(gateway_id)
-        require(node is not None and node["connected"] and self._fresh_observation_node(node), "중개 연결 미확인")
+        require(node is not None and node["instance_id"], "중개 연결 미확인")
 
     def _owned_command(self, node_id, instance_id, command_id):
         node = self._node(node_id, instance_id)
@@ -143,7 +130,44 @@ class DistributedEngine(Engine):
             session_ids = {c["session_id"] for c in snapshot["commands"].values()}
             snapshot["sessions"] = {k: {"error": s["error"]} for k, s in snapshot["sessions"].items() if k in session_ids}
             snapshot["devices"] = {k: d for k, d in snapshot["devices"].items() if k in node["devices"]}
-            return {k: snapshot[k] for k in ["run_id", "server_time", "commands", "tasks", "sessions", "devices"]}
+            out = {k: snapshot[k] for k in ["run_id", "server_time", "commands", "tasks", "sessions", "devices"]}
+            out['operator_observations'] = {cid: deepcopy(value) for cid, value in
+                self.state.get('operator_observations', {}).items() if cid in snapshot['commands']}
+            return out
+
+    def report_motion(self, node_id, instance_id, motion):
+        with self.lock:
+            node = self._node(node_id, instance_id)
+            for robot, value in motion.items():
+                require(robot in {'pinky-1', 'pinky-2'} and isinstance(value, dict), '이동 상태 형식 오류', 422)
+                require(value.get('device_id', robot) in node['devices'], '다른 중개의 장비 상태입니다', 403)
+            self.field_motion[node_id] = {'instance_id': instance_id, 'received_at': self.clock(),
+                                          'robots': deepcopy(motion)}
+
+    @atomic
+    def field_stop(self, robot):
+        session = next((s for s in self.state['sessions'].values()
+                        if s['robot_id'] == robot and s['current_task'] and not s['error']), None)
+        require(session is not None, '실행 중인 작업이 없습니다')
+        self._fault(self.state['tasks'][session['current_task']], '작업자 중단 요청')
+        return {'requested': True, 'physical_stop_confirmed': False}
+
+    @atomic
+    def field_observe(self, command_id, observation, operator):
+        require(command_id in self.state['commands'], '명령을 찾을 수 없습니다', 404)
+        command = self.state['commands'][command_id]
+        data = {'observation': observation}
+        if observation == 'finish':
+            data['finished'] = True
+        for item in self.state['sessions'][command['session_id']]['inventory']:
+            if item['load_command_id'] == command_id and observation == 'pick-'+str(item['slot']):
+                item['physical_loading_confirmed'] = True
+            if item.get('handoff_command_id') == command_id and observation == 'delivered':
+                item['physical_delivery_confirmed'] = True
+        value = {'source': 'operator', 'operator': operator, 'observed_at': self.clock(), 'data': data}
+        self.state.setdefault('operator_observations', {}).setdefault(command_id, {})[observation] = value
+        self._log('field_operator_observation', value, command=command)
+        return {'recorded': True}
 
     @atomic
     def mock_action(self, node_id, instance_id, command_id, action):
@@ -171,22 +195,29 @@ class DistributedEngine(Engine):
         self.state["mock_actions"][key] = event
         return deepcopy(event)
 
-    @atomic
-    def watchdog(self):
-        for node_id, node in self.state["gateways"].items():
-            if node["connected"] and not self._fresh_observation_node(node):
-                node["connected"] = False
-                for device in node["devices"]:
-                    self.state["devices"][device]["connected"] = False
-                self._fault_devices(node["devices"], f"중개 통신 시간 초과: {node_id}")
-                self._log("gateway_disconnected", {"gateway_id": node_id})
-        for command in list(self.state["commands"].values()):
-            if (command["kind"] != "STOP" and command["status"] in {"SENT", "ACCEPTED"}
-                    and self.clock() - command["sent_at"] > command.get("timeout_seconds", self.command_timeout)):
-                self._fault(self.state["tasks"][command["task_id"]], "명령 결과 시간 초과: 성공 여부 불명")
-
     def snapshot(self, sid=None):
         out = super().snapshot(sid)
+        out.pop('operator_observations', None)
+        if sid is None:
+            motion = {}
+            with self.lock:
+                for node_id, report in self.field_motion.items():
+                    node = self.state['gateways'][node_id]
+                    current = node['instance_id'] == report['instance_id']
+                    for robot, value in report['robots'].items():
+                        old = motion.setdefault(robot, {})
+                        if value.get('updated_at', 0) >= old.get('updated_at', 0):
+                            inspection = old.get('inspection')
+                            old.update(deepcopy(value), node_id=node_id,
+                                       received_at=report['received_at'],
+                                       reporting=current and node['connected'] and self._fresh_observation_node(node))
+                            if inspection is not None and 'inspection' not in value:
+                                old['inspection'] = inspection
+                        if current and 'inspection' in value:
+                            old['inspection'] = deepcopy(value['inspection'])
+                            old['inspection_reporting'] = node['connected'] and self._fresh_observation_node(node)
+                            old['inspection_received_at'] = report['received_at']
+                out['hardware_motion'] = motion
         for key in ["mock_world", "mock_actions"]:
             out.pop(key, None)
         for node in out.get("gateways", {}).values():

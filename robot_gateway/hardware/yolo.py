@@ -13,11 +13,11 @@ class YoloArm:
     def __init__(self, config, evidence, frames, products):
         self.config, self.evidence, self.frames, self.products = config, evidence, frames, products
         self.lock = threading.Lock()
-        self.confirmed = []
+        self.executed = []
 
     def execute(self, command, cancelled):
         with self.lock, ExitStack() as stack:
-            self.confirmed = []
+            self.executed = []
             sys.path.insert(0, str(ROOT / 'tools' / 'picking'))
             from pick_core import choose, execute, get_rule, load_config
             from omx_pick import build_pick_plan, calibration_for, reference_for, legacy, require_job_arm
@@ -91,7 +91,7 @@ class YoloArm:
             if cancelled.is_set():
                 raise RuntimeError('모터 준비 중 작업 중단')
             driver.enable()
-            self.confirmed = []
+            self.executed = []
             grasp_choices = []
             try:
                 for item_index, item in enumerate(command['items']):
@@ -117,13 +117,7 @@ class YoloArm:
                         grasp_choices.append({'slot': item['slot'], 'policy': 'fixed',
                                               'id15_pulse': plan['fixed_wrist_pulse']})
                     execute(plan, driver)
-                    if command.get('scope') == 'device_test':
-                        # A completed trajectory is not proof that an item was loaded.
-                        continue
-                    proof = self.evidence.wait(command, 'pick-' + str(item['slot']), cancelled)
-                    if proof.get('confirmed_items') != [item]:
-                        raise RuntimeError('실제 적재 상품·위치 확인 불일치')
-                    self.confirmed.append(item.copy())
+                    self.executed.append(item.copy())
                 if command.get('scope') == 'device_test':
                     result = {'attempted_items': command['items'], 'operator_review_required': True}
                     if grasp_choices:
@@ -131,16 +125,13 @@ class YoloArm:
                     if recording:
                         result['recording_file'] = str(recording.path)
                     return result
-                return {'confirmed_items': self.confirmed.copy()}
+                return {'executed_items': self.executed.copy(), 'physical_loading_confirmed': False}
             finally:
                 driver.hold()
                 if recording:
                     cancelled.wait(1)  # Keep the held return pose visible at the end of the clip.
 
     def stop(self, command, cancelled):
-        # The running trajectory checks cancellation between motor setpoints.
+        # The running trajectory receives cancellation between motor setpoints.
         with self.lock:
-            proof = self.evidence.wait(command, 'stop', threading.Event())
-            if proof.get('stopped') is not True:
-                raise RuntimeError('실제 OMX 정지 확인 필요')
-            return proof
+            return {'cancel_requested': True}
