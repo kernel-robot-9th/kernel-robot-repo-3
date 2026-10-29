@@ -67,6 +67,10 @@ class Camera:
         if self.capture is not None:
             self.capture.release()
 
+    def reopen(self):
+        self.__exit__()
+        self.__enter__()
+
     def read(self):
         # Drain buffered frames after inference/operator waits before using one.
         for _ in range(3):
