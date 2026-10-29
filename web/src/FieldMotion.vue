@@ -4,6 +4,8 @@ import type { Snapshot, FieldMotionStatus } from './types'
 import { api, label, timeText, zoneName } from './api'
 import Icon from './ui/Icon.vue'
 import VideoWall from './VideoWall.vue'
+import CameraPosition from './CameraPosition.vue'
+import RouteSelector from './RouteSelector.vue'
 import { robotName } from './admin/presentation'
 const props = defineProps<{ state: Snapshot; token: string }>()
 defineEmits<{ tests: [] }>()
@@ -40,6 +42,8 @@ function record(commandId: string, observation: string) {
   <section class="panel">
     <div class="section-title"><h2>이동·주차·적재 현황</h2><span class="pill">실물 연동</span></div>
     <p v-if="message" role="status">{{ message }}</p><p v-if="error" class="error" role="alert">{{ error }}</p>
+    <CameraPosition :token="token" />
+    <RouteSelector :token="token" />
     <div class="device-grid field-robots">
       <article v-for="id in ['pinky-1', 'pinky-2']" :key="id" class="panel field-card">
         <div class="section-title"><h3><Icon name="robot" :size="24" /> {{ robotName(id) }}</h3><span class="pill" :class="{bad: !status(id).reporting}">{{ stageLabel(id) }}</span></div>

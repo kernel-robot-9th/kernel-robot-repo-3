@@ -22,6 +22,13 @@ def profiles():
 
 
 class DistributedEngine(Engine):
+    @atomic
+    def select_field_route(self, version):
+        require(version in (3,4), '주행 경로는 v3/v4입니다', 422)
+        self.state['field_route_version'] = version
+        self._log('field_route_selected', {'route_version':version,'effective':'next_session'})
+        return {'selected':version,'effective':'next_session'}
+
     def __init__(self, *args, **kwargs):
         self.profiles = profiles()
         super().__init__(*args, **kwargs)

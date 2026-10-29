@@ -12,6 +12,8 @@ class Frames:
         self.enabled, self.last = enabled, 0.
 
     def offer(self, channel, frame, color='BGR'):
+        from robot_gateway.station_video import cache_frame
+        cache_frame(channel, frame, color)
         if not self.enabled or time.monotonic()-self.last < .2:
             return
         import cv2
@@ -80,5 +82,7 @@ def execute(request):
 
 
 if __name__ == '__main__':
-    result = execute(json.loads(base64.urlsafe_b64decode(sys.argv[1])))
+    from robot_gateway.station_video import camera_job
+    with camera_job():
+        result = execute(json.loads(base64.urlsafe_b64decode(sys.argv[1])))
     print('CARTRINA_RESULT='+json.dumps(result, ensure_ascii=False), flush=True)
