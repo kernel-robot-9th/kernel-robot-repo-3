@@ -192,7 +192,33 @@ class PinkyMobile:
                 print(f'Route Server {phase} 응답 8초간 누락: 경로 계산만 한 번 재요청', flush=True)
 
 
-    def execute(self, command, cancelled):
+    def _plan_connection(self, target, cancelled, accepted, record):
+        request = self.planner_type.Goal()
+        request.goal.header.frame_id = self.profile['frame_id']
+        request.goal.pose.position.x, request.goal.pose.position.y = float(target[0]), float(target[1])
+        request.goal.pose.orientation.z = math.sin(target[2]/2)
+        request.goal.pose.orientation.w = math.cos(target[2]/2)
+        request.planner_id = self.profile['entry_planner_id']
+        request.use_start = False
+        print('Nav2 '+request.planner_id+' 장애물 회피 연결 경로 계산...', flush=True)
+        self._wait_server(self.planner_action, cancelled)
+        self.pending_goal = self.planner_action.send_goal_async(request)
+        self.pending_goal.add_done_callback(accepted)
+        self.handle = self._await(self.pending_goal, cancelled)
+        if not self.handle.accepted:
+            raise RuntimeError('Nav2가 연결 경로 계산을 거부했습니다')
+        planned = self._await(self.handle.get_result_async(), cancelled)
+        record('connection_plan', planner_id=request.planner_id, target=target, status=planned.status,
+               error_code=planned.result.error_code, error_msg=planned.result.error_msg)
+        if cancelled.is_set() or planned.status != 4 or planned.result.error_code:
+            raise RuntimeError(f'Nav2 연결 경로: status={planned.status}, '
+                               f'code={planned.result.error_code}, {planned.result.error_msg}')
+        poses = [pose_values(p.pose) for p in planned.result.path.poses]
+        path = [[p['x'], p['y'], p['yaw']] for p in poses]
+        record('connection_path', poses=path)
+        return path
+
+    def execute(self, command, cancelled, segment_done=None):
         kind = command['kind']
         if kind == 'STOP':
             # Cancel only this adapter's goal. Never cancel another controller's work.
@@ -277,32 +303,15 @@ class PinkyMobile:
                         segments.append(segment)
                     if join_pose is not None:
                         from robots.pinky.route_graph import return_join_segments
-                        segments = return_join_segments(segments, join_pose)
+                        segments = return_join_segments(segments,
+                            lambda target: self._plan_connection(target, cancelled, accepted, record))
                 elif kind == 'NAVIGATE' and self.profile.get('entry_planner_id'):
                     # Join the fixed final reverse dock from the actual pose.
                     # The Hybrid planner includes the rear basket and both driving directions.
                     target = segments[-1]['poses'][0]
-                    request = self.planner_type.Goal()
-                    request.goal.header.frame_id = self.profile['frame_id']
-                    request.goal.header.stamp = self.node.get_clock().now().to_msg()
-                    request.goal.pose.position.x, request.goal.pose.position.y = float(target[0]), float(target[1])
-                    request.goal.pose.orientation.z = math.sin(target[2]/2)
-                    request.goal.pose.orientation.w = math.cos(target[2]/2)
-                    request.planner_id = self.profile['entry_planner_id']
-                    request.use_start = False
-                    self._wait_server(self.planner_action, cancelled)
-                    self.pending_goal = self.planner_action.send_goal_async(request)
-                    self.pending_goal.add_done_callback(accepted)
-                    self.handle = self._await(self.pending_goal, cancelled)
-                    if not self.handle.accepted:
-                        raise RuntimeError('Nav2가 현재 위치 진입 경로 계산을 거부했습니다')
-                    planned = self._await(self.handle.get_result_async(), cancelled)
-                    if cancelled.is_set() or planned.status != 4 or planned.result.error_code:
-                        raise RuntimeError(f'현재 위치 진입 경로: status={planned.status}, '
-                                           f'code={planned.result.error_code}, {planned.result.error_msg}')
-                    poses = [pose_values(p.pose) for p in planned.result.path.poses]
+                    poses = self._plan_connection(target, cancelled, accepted, record)
                     segments = [{'name': 'current_to_dock_approach', 'direction': None,
-                                 'poses': [[p['x'], p['y'], p['yaw']] for p in poses],
+                                 'poses': poses,
                                  'goal_checker_id': self.profile.get('entry_goal_checker_id', 'general_goal_checker')},
                                 {'name': 'align_before_dock', 'direction': 0,
                                  'poses': [target]}] + segments[-1:]
@@ -385,6 +394,8 @@ class PinkyMobile:
                         raise RuntimeError(f"{segment['name']}: status={outcome.status}, "
                                            f"code={getattr(outcome.result, 'error_code', 0)}, "
                                            f"{getattr(outcome.result, 'error_msg', '')}")
+                    if segment_done:
+                        segment_done(segment['name'])
                 result = {'nav2_completed': True, 'zone_id': command['zone_id'],
                           'route_server_used': bool(routed), 'trace_file': str(trace_file) if trace_file else None,
                           'parking_start': routed.get('parking_start') if routed else None,
@@ -428,8 +439,11 @@ class PinkyFleet:
                 self.mobiles[robot] = self.factory(load_profile(self.profiles[robot]), self.evidence)
             return self.mobiles[robot]
 
-    def execute(self, command, cancelled):
-        return self.mobile(command['device_id']).execute(command, cancelled)
+    def execute(self, command, cancelled, segment_done=None):
+        mobile = self.mobile(command['device_id'])
+        if segment_done is None:
+            return mobile.execute(command, cancelled)
+        return mobile.execute(command, cancelled, segment_done=segment_done)
 
     def inspect_all(self):
         with self.lock:

@@ -75,7 +75,7 @@ def test_return_keeps_back_robot_and_reverse_parks_front(tmp_path):
     path = tmp_path/'state.json'; path.write_text(json.dumps({'P1':'C','P2':'back'}))
     fleet = ControlFleet.__new__(ControlFleet); fleet.state_path = path
     calls = []
-    def execute(self, command, cancelled):
+    def execute(self, command, cancelled, segment_done=None):
         calls.append((command['robot_id'], command['route_id'])); return {'nav2_completed':True}
     with patch('robot_gateway.hardware.pinky.PinkyFleet.execute', execute):
         result = fleet.execute({'kind':'LEAVE','robot_id':'pinky-1','device_id':'pinky-1',

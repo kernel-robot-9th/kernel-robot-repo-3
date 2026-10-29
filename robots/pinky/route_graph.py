@@ -25,8 +25,8 @@ def return_from_current(route, current):
     return route
 
 
-def return_join_segments(segments, current):
-    """Face a short curved connection, then follow the computed return route."""
+def return_join_segments(segments, plan_connection):
+    """Use a collision-aware connection; keep the remaining fixed route intact."""
     segments = deepcopy(segments)
     first = segments[0]
     poses = first['poses']
@@ -35,30 +35,14 @@ def return_join_segments(segments, current):
         travelled += math.dist(poses[join-1][:2], poses[join][:2])
         if travelled >= .15:
             break
-    start, end = [current['x'], current['y']], poses[join][:2]
-    travel = math.atan2(end[1]-start[1], end[0]-start[0])
-    reverse = math.pi if first['direction'] < 0 else 0.
-    tangent = poses[join][2]+reverse
-    handle = math.dist(start, end)/3
-    controls = [start, [start[0]+handle*math.cos(travel), start[1]+handle*math.sin(travel)],
-                [end[0]-handle*math.cos(tangent), end[1]-handle*math.sin(tangent)], end]
-    count = max(1, math.ceil(sum(math.dist(a,b) for a,b in zip(controls, controls[1:]))/.005))
-    path = []
-    for i in range(count):
-        t = i/count
-        weights = [(1-t)**3, 3*(1-t)**2*t, 3*(1-t)*t*t, t**3]
-        point = [sum(w*p[j] for w,p in zip(weights, controls)) for j in range(2)]
-        derivative = [sum(w*(b[j]-a[j]) for w,a,b in
-                          zip([(1-t)**2, 2*(1-t)*t, t*t], controls, controls[1:])) for j in range(2)]
-        yaw = math.atan2(derivative[1], derivative[0])+reverse
-        path.append(point+[math.atan2(math.sin(yaw), math.cos(yaw))])
-    first['poses'] = path+poses[join:]
-    initial = [current['x'], current['y'], current['yaw']]
+    path = plan_connection(poses[join])
+    # Keep the planner's body headings, including reverse sections and cusps.
+    # One FollowPath avoids a stop/spin between the connection and the road.
+    first['poses'] = path+poses[join+1:]
     goal = segments[-1]['poses'][-1][:]
     final = [] if segments[-1]['direction'] == 0 or segments[-1].get('camera_guided') else [
         {'name':'waiting_heading', 'direction':0, 'poses':[goal]}]
-    return ([{'name':'face_return_join', 'direction':0, 'poses':[initial, first['poses'][0]]}]
-            + segments + final)
+    return segments + final
 
 
 def departure_path(poses, current, *, align_heading=False):
