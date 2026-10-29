@@ -28,6 +28,12 @@ def identity(marker):
     return marker['dictionary'], marker['marker_id']
 
 
+def select_anchor(anchor, marker, transform):
+    return {'pixel': project([[0, 0]], np.linalg.inv(plane_transform(marker)))[0].tolist(),
+            'map_xy': layout_to_map([anchor['layout_xy']], transform)[0].tolist(),
+            'anchor_id': anchor['id'], 'layout_xy': anchor['layout_xy']}
+
+
 def save_calibration(config, points, height_mm, image_size):
     matrix, residual = fit_plane(points)
     lens = config.get('intrinsics_file')
@@ -55,11 +61,20 @@ def run(args):
         config['calibration_file'] = args.calibration
     root = Path(config['output_directory'])
     root.mkdir(parents=True, exist_ok=True)
+    if args.mode in ('wait', 'wait-list'):
+        from scripts.pinky_wait_record import run
+        return run(args, config)
     calibration = read(config['calibration_file'])
     robots = read(config['robots_file'], {})
     registry = read(config['layout_registry'])
     transform = registry['layout_to_map']
+    anchors = read(args.anchors_file, {}).get('points', [])
     if args.mode == 'anchors':
+        if anchors:
+            for anchor in anchors:
+                print(json.dumps({**anchor, 'map_xy': layout_to_map([anchor['layout_xy']], transform)[0].tolist()}, ensure_ascii=False))
+            print('줄자로 바닥 기준점을 표시하고 P1 마커 중심을 각 점 바로 위에 놓아 기록하세요.')
+            return
         for name, xy in [('back_left', [0, 0]), ('A_B_wall', [.6, 0]),
                          ('B_C_wall', [1.2, 0]), ('back_right', [2, 0]),
                          ('front_left', [0, -1.5]), ('front_right', [2, -1.5])]:
@@ -108,7 +123,7 @@ def run(args):
             raise ValueError('캘리 등록 당시와 렌즈 보정 파일이 다릅니다. 같은 설정을 사용하세요.')
 
     cap = None
-    state = {'frozen': None, 'pixel': None, 'map_xy': None, 'front': None, 'scale': 1., 'left_width': 0}
+    state = {'frozen': None, 'pixel': None, 'map_xy': None, 'front': None, 'scale': 1., 'left_width': 0, 'anchor_id': None}
     points = read(root/'points-draft.json', {}).get('points', []) if args.resume else []
     index, count, last_ids = 0, 0, None
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -134,7 +149,9 @@ def run(args):
     print('왼쪽: 현재 카메라 / 오른쪽: 저장 지도 + 주황 실측 배치. 로봇 명령은 없습니다.', flush=True)
     print('Tab: 마커 선택 / M: 선택 마커 중심 고정 / 클릭: 영상점→지도점 / X: 정확한 layout x y 입력', flush=True)
     print('Y: 정확한 map x y 입력 / Enter: 대응점·검증·로봇 저장 / S: 캘리 저장 / U: 마지막 점 삭제 / R: 선택 해제 / Q: 종료', flush=True)
-    print('robot 모드: 선택 마커의 실제 로봇 앞쪽을 영상에서 클릭 후 Enter.', flush=True)
+    print('robot 모드: --front-angle-deg 지정 시 클릭 없이 Enter. 생략하면 실제 앞쪽 클릭 후 Enter.', flush=True)
+    if anchors:
+        print('기준점 1~4: 선택 마커 중심과 실측 좌표 자동 선택 → Enter로 기록. 바닥 십자 바로 위에 놓은 뒤 선택하세요.', flush=True)
     try:
         if not args.image:
             cam = config['camera']
@@ -162,7 +179,7 @@ def run(args):
             image_size = [frame.shape[1], frame.shape[0]]
             if calibration and args.mode in ('view', 'check') and image_size != calibration['image_size']:
                 raise ValueError('캘리 등록 해상도와 현재 영상 해상도가 다릅니다. 같은 해상도를 사용하세요.')
-            found = detect_markers(frame, config.get('dictionary'))
+            found = detect_markers(frame, config.get('dictionary'), args.marker_id)
             ids = [identity(m) for m in found]
             if ids != last_ids:
                 print('검출:', ids, flush=True)
@@ -191,6 +208,10 @@ def run(args):
                 cv2.circle(overlay, tuple(np.int32(p['pixel'])), 4, (255, 100, 0), -1)
                 label(overlay, str(i+1), p['pixel'])
                 label(chart, str(i+1), on_map(p['map_xy']))
+            for anchor in anchors:
+                xy = layout_to_map([anchor['layout_xy']], transform)[0]
+                cv2.circle(chart, on_map(xy), 7, (255, 80, 200), 1)
+                label(chart, f"K{anchor['id']}", np.array(on_map(xy))+[8, 0], (255, 80, 200))
             if state['pixel'] is not None:
                 cv2.circle(overlay, tuple(np.int32(state['pixel'])), 6, (255, 0, 255), 2)
             if state['front'] is not None:
@@ -201,7 +222,7 @@ def run(args):
             canvas = np.zeros((max(left.shape[0], chart.shape[0])+32, left.shape[1]+chart.shape[1], 3), np.uint8)
             canvas[:left.shape[0], :left.shape[1]] = left
             canvas[:chart.shape[0], left.shape[1]:] = chart
-            label(canvas, f'{args.mode} | points:{len(points)} | lens:{"corrected" if lens else "not calibrated"} | NO ROS / NO MOTION', (8, canvas.shape[0]-10))
+            label(canvas, f'{args.mode} | points:{len(points)} | anchor:{state["anchor_id"] or "-"} | lens:{"corrected" if lens else "not calibrated"} | NO ROS / NO MOTION', (8, canvas.shape[0]-10))
             now = time.time()
             if now-last_record > .2:
                 status = {'observed_at': now, 'frame_id': 'map', 'image_size': image_size,
@@ -222,8 +243,15 @@ def run(args):
             if key == 9:
                 index += 1
                 state.update(front=None, frozen=None)
+            elif anchors and args.mode in ('calibrate', 'check') and ord('1') <= key <= ord('9'):
+                anchor = next((a for a in anchors if a['id'] == key-ord('0')), None)
+                if anchor and selected:
+                    state.update(select_anchor(anchor, selected, transform), frozen=frame.copy())
+                    print(f"기준점 {anchor['id']} 선택 / layout {anchor['layout_xy']} / 마커 중심 자동 선택. Enter: 저장", flush=True)
+                else:
+                    print('해당 기준점과 검출 마커를 확인하세요.', flush=True)
             elif key == ord('r'):
-                state.update(pixel=None, map_xy=None, front=None, frozen=None)
+                state.update(pixel=None, map_xy=None, front=None, frozen=None, anchor_id=None)
             elif key == ord('m') and selected:
                 state['pixel'] = project([[0, 0]], np.linalg.inv(plane_transform(selected)))[0].tolist()
                 state['frozen'] = frame.copy()
@@ -238,13 +266,14 @@ def run(args):
                 calibration = save_calibration(config, points, args.plane_height_mm, image_size)
                 cv2.imwrite(str(root/'calibration-reference.jpg'), canvas)
             elif key in (10, 13):
-                if args.mode == 'robot' and selected and state['front'] is not None:
+                if args.mode == 'robot' and selected and (args.front_angle_deg is not None or state['front'] is not None):
                     offset = ([args.marker_forward_mm/1000, args.marker_left_mm/1000]
                               if args.marker_forward_mm is not None and args.marker_left_mm is not None else None)
                     robots[args.robot] = {'robot': args.robot, 'dictionary': selected['dictionary'],
                         'marker_id': selected['marker_id'], 'marker_size_m': args.size_mm/1000,
                         'height_m': args.height_mm/1000, 'base_to_marker_m': offset,
-                        'front_yaw_from_edge': front_angle(selected, state['front']), 'recorded_at': now}
+                        'front_yaw_from_edge': (math.radians(args.front_angle_deg) if args.front_angle_deg is not None
+                                               else front_angle(selected, state['front'])), 'recorded_at': now}
                     atomic_json(config['robots_file'], robots)
                     cv2.imwrite(str(root/f'{args.robot}-reference.jpg'), overlay)
                     print('로봇 마커 저장:', json.dumps(robots[args.robot], ensure_ascii=False), flush=True)
@@ -253,9 +282,17 @@ def run(args):
                     print('영상점과 실제 지도 좌표를 먼저 선택하세요.', flush=True)
                     continue
                 point = {'pixel': state['pixel'], 'map_xy': state['map_xy'], 'recorded_at': now}
+                if state['anchor_id'] is not None:
+                    point.update(anchor_id=state['anchor_id'], layout_xy=state['layout_xy'])
                 if args.mode == 'calibrate':
-                    points.append(point)
-                    cv2.imwrite(str(root/f'point-{len(points):02d}.jpg'), frame)
+                    previous = next((i for i, p in enumerate(points) if point.get('anchor_id') is not None
+                                     and p.get('anchor_id') == point['anchor_id']), None)
+                    if previous is None:
+                        points.append(point)
+                        previous = len(points)-1
+                    else:
+                        points[previous] = point
+                    cv2.imwrite(str(root/f'point-{previous+1:02d}.jpg'), frame)
                     atomic_json(root/'points-draft.json', {'points': points, 'image_size': image_size,
                                 'plane_height_mm': args.plane_height_mm})
                     print('대응점 저장:', len(points), point, flush=True)
@@ -267,7 +304,7 @@ def run(args):
                     calibration['independent_validation'].append(point)
                     atomic_json(config['calibration_file'], calibration)
                     print('검증 결과:', json.dumps(point, ensure_ascii=False), flush=True)
-                state.update(pixel=None, map_xy=None, frozen=None)
+                state.update(pixel=None, map_xy=None, frozen=None, anchor_id=None)
     finally:
         record.close()
         if cap is not None:
@@ -278,13 +315,17 @@ def run(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('mode', choices=['view', 'calibrate', 'robot', 'check', 'anchors'])
+    p.add_argument('mode', choices=['view', 'calibrate', 'robot', 'check', 'anchors', 'wait', 'wait-list'])
     p.add_argument('--config')
     p.add_argument('--camera')
     p.add_argument('--dictionary')
     p.add_argument('--calibration', help='다른 상단 높이의 평면은 별도 파일 사용')
+    p.add_argument('--anchors-file', help='번호로 선택할 실측 기준점 layout 좌표 JSON')
     p.add_argument('--plane-height-mm', type=float)
     p.add_argument('--robot', choices=['P1', 'P2'])
+    p.add_argument('--slot', choices=['front', 'back'], help='대기 선두/후열 목표 기록')
+    p.add_argument('--marker-id', type=int)
+    p.add_argument('--front-angle-deg', type=float, help='마커 0도 축에 대한 실제 앞방향; 클릭보다 우선')
     p.add_argument('--size-mm', type=float)
     p.add_argument('--height-mm', type=float)
     p.add_argument('--marker-forward-mm', type=float, help='차체 원점→마커 중심의 전방 거리')

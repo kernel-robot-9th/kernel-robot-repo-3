@@ -1,15 +1,16 @@
 {
   "camera": {
     "camera_by_id": "/dev/v4l/by-id/usb-HFSD-231214-J_SNAP_U2-video-index0",
-    "width": 1280,
-    "height": 720,
+    "width": 1920,
+    "height": 1080,
     "fps": 30
   },
   "map_yaml": "runtime/field/pinky-map-new.yaml",
   "layout_registry": "runtime/field/pinky-p1-measured-goals.json",
   "calibration_file": "runtime/field/pinky-overhead/calibration.json",
   "robots_file": "runtime/field/pinky-overhead/robots.json",
+  "wait_targets_file": "runtime/field/pinky-overhead/wait-targets.json",
   "output_directory": "runtime/field/pinky-overhead",
   "intrinsics_file": null,
-  "dictionary": null
+  "dictionary": "DICT_5X5_1000"
 }

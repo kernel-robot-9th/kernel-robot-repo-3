@@ -1,0 +1,12 @@
+{
+  "plane_height_mm": 143,
+  "frame": "layout",
+  "width_m": 2.0,
+  "depth_m": 1.5,
+  "points": [
+    {"id": 1, "name": "aisle_A_side", "layout_xy": [0.30, -0.85], "from_left_mm": 300, "from_waiting_edge_mm": 650},
+    {"id": 2, "name": "aisle_C_side", "layout_xy": [1.70, -0.85], "from_left_mm": 1700, "from_waiting_edge_mm": 650},
+    {"id": 3, "name": "waiting_A_side", "layout_xy": [0.30, -1.30], "from_left_mm": 300, "from_waiting_edge_mm": 200},
+    {"id": 4, "name": "waiting_C_side", "layout_xy": [1.70, -1.30], "from_left_mm": 1700, "from_waiting_edge_mm": 200}
+  ]
+}
