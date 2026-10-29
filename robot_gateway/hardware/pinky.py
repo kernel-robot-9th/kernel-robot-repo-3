@@ -71,10 +71,17 @@ class PinkyMobile:
         self.action_type, self.spin_type = FollowPath, Spin
         self.planner_action = ActionClient(self.node, ComputePathToPose, '/compute_path_to_pose')
         self.planner_type = ComputePathToPose
+        if profile.get('camera_socket'):
+            from geometry_msgs.msg import PoseWithCovarianceStamped
+            self.camera_initial_pose = self.node.create_publisher(
+                PoseWithCovarianceStamped, '/initialpose', latched)
         self.route_index = {}
+        self.route_graph_hash = None
         if profile.get('route_index_file'):
             from nav2_msgs.action import ComputeRoute
-            self.route_index = json.loads(Path(profile['route_index_file']).read_text())['routes']
+            index = json.loads(Path(profile['route_index_file']).read_text())
+            self.route_index = index['routes']
+            self.route_graph_hash = index.get('graph_sha256')
             self.route_type = ComputeRoute
             self.route_action = ActionClient(self.node, ComputeRoute, '/compute_route')
         self.thread = threading.Thread(target=self.executor.spin, daemon=True)
@@ -131,6 +138,14 @@ class PinkyMobile:
                     'base_command_connected': self.profile.get('base_node', 'pinky_bringup') in subscribers}
         except Exception as exc:
             return {'connected': False, 'error': str(exc)[:200]}
+
+    def correct_from_camera(self, cancelled=None):
+        if not self.profile.get('camera_socket'):
+            return {'published': False, 'reason': '카메라 보정 미설정'}
+        from .camera_navigation import correct_mobile
+        value = correct_mobile(self, cancelled)
+        print('카메라 위치 보정: '+json.dumps(value, ensure_ascii=False), flush=True)
+        return value
 
     @staticmethod
     def _await(future, cancelled=None, timeout=None):
@@ -214,8 +229,33 @@ class PinkyMobile:
                     handle.cancel_goal_async()
             try:
                 from geometry_msgs.msg import PoseStamped
+                if self.profile.get('planning_footprint'):
+                    record('navigation_geometry', footprint=self.profile['planning_footprint'],
+                           basket_scale=self.profile.get('planning_basket_scale'))
+                camera_correction = {}
+                route_key = f"v{command.get('route_version',4)}/{contract['route_id']}"
+                entry = self.route_index.get(route_key) or self.route_index.get(contract['route_id'])
+                camera_only = entry and all(s.get('camera_guided') for s in entry['segments'])
+                if self.profile.get('camera_socket') and not camera_only:
+                    camera_correction = self.correct_from_camera(cancelled)
+                    record('camera_localization', **camera_correction)
                 segments = selected['segments']
-                routed = self.route_index.get(contract['route_id'])
+                version = command.get('route_version', 4)
+                version_key = f"v{version}/{contract['route_id']}"
+                routed = (self.route_index[version_key] if version == 3 else
+                          self.route_index.get(version_key) or self.route_index.get(contract['route_id']))
+                record('route_identity', route_version=version, route_id=contract['route_id'],
+                       route_index_file=self.profile.get('route_index_file'),
+                       graph_sha256=self.route_graph_hash, source_hash=contract['source_hash'])
+                join_pose = None
+                if routed and command.get('join_return_from_current'):
+                    from robots.pinky.route_graph import return_from_current
+                    join_pose = (camera_correction.get('pose') or
+                                 self.snapshot(wait_for_tf=True, cancelled=cancelled)['pose'])
+                    routed = return_from_current(routed, join_pose)
+                    print('현재 위치 → 복귀 경로 합류: '+routed['segments'][0]['name'], flush=True)
+                    record('return_join', pose=join_pose, segment=routed['segments'][0]['name'],
+                           start_id=routed['segments'][0]['start_id'])
                 if routed:
                     from robots.pinky.route_graph import directed_path
                     segments = []
@@ -235,6 +275,9 @@ class PinkyMobile:
                                                              original['poses'][-1][2])
                             print(f"Route Server {segment['name']}: {len(segment['poses'])}개 경로점", flush=True)
                         segments.append(segment)
+                    if join_pose is not None:
+                        from robots.pinky.route_graph import return_join_segments
+                        segments = return_join_segments(segments, join_pose)
                 elif kind == 'NAVIGATE' and self.profile.get('entry_planner_id'):
                     # Join the fixed final reverse dock from the actual pose.
                     # The Hybrid planner includes the rear basket and both driving directions.
@@ -263,10 +306,22 @@ class PinkyMobile:
                                  'goal_checker_id': self.profile.get('entry_goal_checker_id', 'general_goal_checker')},
                                 {'name': 'align_before_dock', 'direction': 0,
                                  'poses': [target]}] + segments[-1:]
+                from robots.pinky.route_graph import observation_heading, path_goal_checker
+                if not (routed and routed.get('waiting_slot')):
+                    segments = observation_heading(segments)
+                camera_segments = [s for s in segments if s.get('camera_guided')]
+                segments = [s for s in segments if not s.get('camera_guided')]
+                if version == 3 and segments:
+                    print('v3 중간 이동: 위치 5cm 도달로 다음 구간 연결, 방향은 경로·회전 구간에서 정렬', flush=True)
                 for index, segment in enumerate(segments):
                     if cancelled.is_set():
                         raise RuntimeError('중단된 관제 경로')
+                    # Each preceding Nav2 action has finished before this boundary.
+                    if index and self.profile.get('camera_socket') and segment['name'] not in ('observation_heading','waiting_entry_heading'):
+                        record('camera_localization', **self.correct_from_camera(cancelled))
                     if segment['direction'] == 0:
+                        if segment['name'] == 'observation_heading':
+                            print('관측 위치 5cm 이내 도착 → 최종 방향 정렬 → 카메라 정밀주차', flush=True)
                         print('회전 전 지도 위치(TF) 수신 대기...', flush=True)
                         spin_origin = self.snapshot(wait_for_tf=True, cancelled=cancelled)['pose']
                         if segment['name'] == 'home_face_aisle' and segments[index+1]['name'] == 'home_to_dock':
@@ -289,9 +344,9 @@ class PinkyMobile:
                             print('현재 위치에서 후진 연결 → 기존 통로 경로', flush=True)
                         request = self.action_type.Goal()
                         request.path.header.frame_id = self.profile['frame_id']
-                        request.path.header.stamp = self.node.get_clock().now().to_msg()
+                        # Keep stamp=0 so goal checking uses the latest map→odom correction, like path tracking.
                         request.controller_id = 'FollowPath'
-                        request.goal_checker_id = segment.get('goal_checker_id', 'general_goal_checker')
+                        request.goal_checker_id = path_goal_checker(segment, version)
                         request.progress_checker_id = 'progress_checker'
                         for x, y, yaw in segment['poses']:
                             item = PoseStamped()
@@ -300,7 +355,8 @@ class PinkyMobile:
                             item.pose.orientation.z, item.pose.orientation.w = math.sin(yaw/2), math.cos(yaw/2)
                             request.path.poses.append(item)
                         client = self.action
-                    record('segment', name=segment['name'], direction=segment['direction'], poses=segment['poses'])
+                    record('segment', name=segment['name'], direction=segment['direction'], poses=segment['poses'],
+                           goal_checker_id=getattr(request, 'goal_checker_id', None))
                     self._wait_server(client, cancelled)
                     self.pending_goal = client.send_goal_async(request)
                     self.pending_goal.add_done_callback(accepted)
@@ -322,7 +378,8 @@ class PinkyMobile:
                         time.sleep(.03)
                     outcome = result.result()
                     record('segment_result', name=segment['name'], status=outcome.status,
-                           error_code=getattr(outcome.result, 'error_code', 0))
+                           error_code=getattr(outcome.result, 'error_code', 0),
+                           error_msg=getattr(outcome.result, 'error_msg', ''))
                     if (cancelled.is_set() or outcome.status != 4
                             or getattr(outcome.result, 'error_code', 0) != 0):
                         raise RuntimeError(f"{segment['name']}: status={outcome.status}, "
@@ -332,6 +389,11 @@ class PinkyMobile:
                           'route_server_used': bool(routed), 'trace_file': str(trace_file) if trace_file else None,
                           'parking_start': routed.get('parking_start') if routed else None,
                           'pose': None}
+                if camera_segments:
+                    from .wait_parking import align_wait
+                    result['waiting_parking'] = align_wait('P'+self.profile['robot_id'][-1],
+                        routed['waiting_slot'], self.profile, cancelled, segments=camera_segments)
+                    record('waiting_parking', **result['waiting_parking'])
                 try:
                     value = self.snapshot()
                     result['pose'] = value['pose']

@@ -40,14 +40,18 @@ case "${1:-}" in
     start_relay
     ;;
   localize)
-    nohup ros2 launch "$root/bringup_field.launch.xml" >"$root/logs/bringup.log" 2>&1 </dev/null &
-    echo "$!" >"$root/bringup.pid"
+    if ! pgrep -f '[/]pinky_bringup/bringup' >/dev/null; then
+      nohup ros2 launch "$root/bringup_field.launch.xml" >"$root/logs/bringup.log" 2>&1 </dev/null &
+      echo "$!" >"$root/bringup.pid"
+    fi
     start_relay
-    nohup ros2 launch pinky_navigation localization_launch.xml use_composition:=False \
-      map:="$map_file" params_file:="$root/nav2_basket.yaml" \
-      >"$root/logs/localization.log" 2>&1 </dev/null &
-    echo "$!" >"$root/localization.pid"
-    echo "$robot_id 센서·지도 기동. RViz에서 현재 위치와 앞방향을 지정하세요."
+    if ! pgrep -f '[/]nav2_amcl/amcl' >/dev/null; then
+      nohup ros2 launch pinky_navigation localization_launch.xml use_composition:=False \
+        map:="$map_file" params_file:="$root/nav2_basket.yaml" \
+        >"$root/logs/localization.log" 2>&1 </dev/null &
+      echo "$!" >"$root/localization.pid"
+    fi
+    echo "$robot_id 센서·지도 준비. 카메라 보정 또는 RViz로 현재 위치를 지정하세요."
     ;;
   navigation|restart-navigation)
     # Legacy nohup launches can ignore SIGINT. Find every navigation launch
@@ -60,6 +64,18 @@ import sys
 import time
 
 config = sys.argv[1]
+import yaml
+path = Path(config)
+values = yaml.safe_load(path.read_text())
+controller = values['controller_server']['ros__parameters']
+backup = path.with_name('nav2_basket.before-observation-5cm.yaml')
+if not backup.exists():
+    backup.write_bytes(path.read_bytes())
+controller['observation_goal_checker'] = {
+    'plugin': 'nav2_controller::PositionGoalChecker', 'xy_goal_tolerance': .05, 'stateful': True}
+if 'observation_goal_checker' not in controller['goal_checker_plugins']:
+    controller['goal_checker_plugins'].append('observation_goal_checker')
+path.write_text(yaml.safe_dump(values, sort_keys=False))
 processes = {}
 for entry in Path('/proc').iterdir():
     if not entry.name.isdigit():

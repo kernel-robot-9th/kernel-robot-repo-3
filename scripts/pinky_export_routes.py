@@ -27,6 +27,10 @@ def main():
             observation = dict(observations[zone+'/P'+profile['robot_id'][-1]])
             observation['goal_forward_m'] += profile.get('observation_extra_reverse_m', {}).get(zone, 0.)
             selected = observation_arrival(selected, observation)
+        if profile.get('wait_targets_file'):
+            from robot_gateway.hardware.wait_parking import waiting_route
+            selected = waiting_route(selected, 'P'+profile['robot_id'][-1],
+                                     json.loads(Path(profile['wait_targets_file']).read_text()))
         plans.append(selected)
     graph, index = build_graph(plans)
     output = Path(args.output)

@@ -18,7 +18,11 @@ SSH는 별도 세션에서 실행해 관제 Ctrl-C로 먼저 끊기지 않으며
 주행의 최종 목표는 이제 로봇·구역별 저장된 후진 관측 위치다. 정차 목표 축으로 저장된
 `goal_forward_m/goal_left_m`를 지도에 변환하며, 실제 정밀주차 목표는 바꾸지 않는다.
 P1·P2는 각각 `pinky-route-network-p1.json`/`pinky-route-network-p2.json`을 사용한다.
-관측 목표만 `observation_goal_checker`의 위치 허용 오차 1cm를 사용한다.
+관측 목표만 `observation_goal_checker`의 위치 허용 오차 5cm를 사용한다.
+P1·P2 모두 위치만 판정하는 `PositionGoalChecker`로 경로 추종을 종료한 뒤,
+별도 Spin으로 저장된 관측 방향을 맞추고 카메라 정밀주차로 넘긴다.
+방향 정렬 직전에는 전체 카메라 위치 보정을 반복하지 않아 도착 판정과 같은 지도 기준을 이어 쓴다.
+카메라 정밀주차의 기존 위치·방향 허용 오차와 대기자리 목표는 유지한다.
 통합 실행은 도착 후 추가 후진 없이 관측부터 시작한다. 관측 위치에서 주차만 별도 실행할 때는
 `parking --robot P1 --zone A --mode align --start-at-observation`을 사용한다.
 아래 초기 준비 기록 이후 A/B/C × P1/P2의 목표·관측 위치·마커 geometry는 사용자 등록 완료.
