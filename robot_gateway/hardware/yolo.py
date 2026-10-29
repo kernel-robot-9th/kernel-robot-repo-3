@@ -51,7 +51,7 @@ class YoloArm:
                 recording.wait_ready()  # Require video before opening or enabling the robot.
             if cancelled.is_set():
                 raise RuntimeError('준비 중 작업 중단')
-            bus = stack.enter_context(DynamixelBus(profile.port))
+            bus = stack.enter_context(DynamixelBus(profile.port, frame_file=cfg.get('motor_frame_file')))
             recorder = legacy('07_omx_pose_recorder.py', 'cartrina_pose_recorder')
 
             class CancellableMotion(MotionController):
