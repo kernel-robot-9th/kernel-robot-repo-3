@@ -1,0 +1,29 @@
+{
+  "camera_config": "runtime/field/pinky-camera-navigation.json",
+  "recorded_targets": "runtime/field/pinky-overhead/wait-targets.json",
+  "targets_file": "runtime/field/pinky-wait-parking/targets.json",
+  "runs_directory": "runtime/field/pinky-wait-parking/runs",
+  "position_tolerance_m": 0.03,
+  "yaw_tolerance_deg": 7,
+  "speed_mps": 0.03,
+  "angular_speed_rps": 0.25,
+  "approach_inboard_m": 0.18,
+  "approach_behind_m": 0.18,
+  "entry_length_m": 0.16,
+  "entry_inboard_m": 0.40,
+  "entry_handle_m": 0.18,
+  "front_entry_length_m": 0.50,
+  "front_entry_handle_m": 0.25,
+  "final_straight_m": 0.10,
+  "lookahead_m": 0.06,
+  "basket_scale": 0.7,
+  "dimensions": {
+    "body_front_m": 0.06,
+    "body_rear_m": -0.0759777993,
+    "body_width_m": 0.12,
+    "basket_width_m": 0.127,
+    "basket_length_m": 0.155,
+    "basket_mount_x_m": -0.0759777993,
+    "source": "바구니는 저장 실측값. 본체 외곽·바구니 부착 기준은 기존 모델값이며 추가 실측값이 아님."
+  }
+}

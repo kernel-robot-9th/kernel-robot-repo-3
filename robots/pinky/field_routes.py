@@ -99,7 +99,7 @@ def plan(path, route_id, *, taught_dock=True):
 
 def command_route(path, command):
     if command.get('route_id'):
-        selected = network_plan(path, command['route_id'])
+        selected = version_plan(path, command['route_id'], command.get('route_version', 4))
         return {k: selected[k] for k in ('route_id', 'route_version', 'source_hash',
                 'registration_sha256', 'map_sha256', 'frame_id', 'robot_id')}
     registry, _, _ = registration(path)
@@ -111,7 +111,8 @@ def command_route(path, command):
                     'handoff': 'handoff_to_home_'+command.get('return_slot', 'front')}[command['zone_id']]
     if not route_id:
         raise ValueError('관제 기준 경로 미등록: ' + key)
-    selected = plan(path, route_id)
+    selected = (plan(path, route_id) if command.get('route_version', 4) == 4 else
+                version_plan(path, route_id, 3))
     return {k:selected[k] for k in ('route_id','route_version','source_hash',
         'registration_sha256','map_sha256','frame_id','robot_id')}
 
@@ -186,3 +187,48 @@ def network_plan(path, route_id):
         segments[1:] = [dict(name='home_to_dock', direction=-1,
                              poses=segments[1]['poses']+segments[-1]['poses'][1:])]
     return result
+
+
+def version_plan(path, route_id, version=4):
+    """Retain each replay's road geometry and connect to the common taught docks."""
+    if version == 4:
+        return network_plan(path, route_id)
+    from . import catalog
+    from copy import deepcopy
+    if version != 3:
+        raise ValueError('지원 경로 버전은 3/4입니다')
+    if '_exit_to_' in route_id:
+        result = version_plan(path, route_id.replace('_exit',''), 3)
+        result['route_id'] = route_id; result['segments'] = result['segments'][1:]
+        return result
+    if route_id.startswith('exit_'):
+        zone = route_id[-1]
+        result = version_plan(path, zone+'_to_handoff', 3)
+        result['route_id'] = route_id; result['segments'] = result['segments'][:1]
+        return result
+    value, (tx,ty,angle), signature = registration(path)
+    route = catalog.route(route_id);c,s = math.cos(angle),math.sin(angle)
+    def convert(p):
+        x,y,yaw=p
+        return [tx+c*x-s*y,ty+s*x+c*y,math.atan2(math.sin(yaw+angle),math.cos(yaw+angle))]
+    result = dict(route_id=route_id, route_version=3, source_hash=route.source_hash,
+                  registration_sha256=signature, map_sha256=value['map_sha256'], frame_id=value['frame_id'],
+                  robot_id=value['robot_id'],segments=[dict(name=v.name,direction=v.direction,
+                      poses=[convert(p) for p in v.poses]) for v in route.segments])
+    if route_id=='queue_advance': return result
+    source,destination=route_id.split('_to_')
+    docks={z:plan(path,'home_to_'+z)['segments'][-1]['poses'][-1] for z in ('A','B','handoff')}
+    def line(a,b,count):
+        da=math.atan2(math.sin(b[2]-a[2]),math.cos(b[2]-a[2]))
+        poses=[[a[0]+(b[0]-a[0])*i/(count-1),a[1]+(b[1]-a[1])*i/(count-1),
+                 math.atan2(math.sin(a[2]+da*i/(count-1)),math.cos(a[2]+da*i/(count-1)))]
+               for i in range(count)]
+        poses[-1]=b[:]
+        return poses
+    if source in docks:
+        first=result['segments'][0]
+        first['poses']=line(docks[source],first['poses'][-1],len(first['poses']))
+    if destination in docks:
+        last=result['segments'][-1]
+        last['poses']=line(last['poses'][0],docks[destination],len(last['poses']))
+    return deepcopy(result)

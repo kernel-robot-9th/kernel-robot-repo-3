@@ -43,7 +43,7 @@ def navigate(config, robot, route, command=None):
     command = dict(command or command_for(robot, 'C'), route_id=route)
     mobile = PinkyMobile(load_profile(config['profiles'][robot]))
     try:
-        print(robot+' Route Server → '+route, flush=True)
+        print(robot+' Route Server v'+str(command.get('route_version',4))+' → '+route, flush=True)
         return mobile.execute(command, threading.Event())
     finally:
         mobile.close()
@@ -51,11 +51,12 @@ def navigate(config, robot, route, command=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation', choices=['move','both','arm','parking','rviz','teleop','setup','list','locate'])
+    p.add_argument('operation', choices=['move','both','arm','parking','rviz','teleop','setup','list','locate','camera-pose','wait'])
     p.add_argument('--robot', choices=['P1','P2'], default='P1')
     p.add_argument('--zone', choices=['A','B','C','front','back'], default='A')
     p.add_argument('--from', dest='source', choices=['front','back','A','B','C','A_exit','B_exit'])
     p.add_argument('--route')
+    p.add_argument('--route-version', type=int, choices=[3,4], default=4)
     p.add_argument('--parking', action='store_true')
     p.add_argument('--start-at-observation', action='store_true')
     p.add_argument('--mode', choices=['view','teach','teach-observe','geometry','align','list','odom'], default='view')
@@ -66,10 +67,22 @@ def main():
     p.add_argument('--sku', default='SKU-JIN-RAMEN'); p.add_argument('--slot', type=int, default=0)
     p.add_argument('--side', choices=['left','right'])
     args = p.parse_args(); config = configuration()
+    if args.operation == 'wait' and args.zone not in ('front','back'):
+        p.error('wait 목적지는 --zone front 또는 --zone back입니다.')
+    if args.operation == 'camera-pose':
+        mobile = PinkyMobile(load_profile(config['profiles'][args.robot]))
+        try:
+            mobile.correct_from_camera()
+        finally:
+            mobile.close()
+        return
     if args.operation == 'setup':
         domain = args.robot[-1]
         script = 'run_pinky_route_server.sh' if args.phase == 'route' else 'run_pinky_robot.sh'
         phase = '' if args.phase == 'route' else args.phase
+        subprocess.run(['scp', '-q', '-i', str(Path(config['ssh_key']).expanduser()),
+                        '-o', 'BatchMode=yes', 'scripts/'+script,
+                        config['robots'][args.robot]+':cartrina-field/'+script], check=True)
         command = (f'PINKY_DOMAIN_ID={domain} PINKY_ROBOT_ID=pinky-{domain} '
                    f'PINKY_MAP_FILE="$HOME/cartrina-field/maps/pinky_map_new.yaml" '
                    f'bash ~/cartrina-field/{script} {phase}')
@@ -86,6 +99,13 @@ def main():
     if args.operation == 'list':
         print(json.dumps(run_station(args.zone, {'operation':'inventory','zone':args.zone}), ensure_ascii=False, indent=2)); return
     if args.operation == 'parking':
+        if args.zone in ('front','back'):
+            if args.mode != 'align':
+                p.error('대기자리 주차는 --mode align을 사용합니다.')
+            # Join the registered open-space approach, rather than steering at
+            # the wall from an arbitrary starting position.
+            args.operation = 'wait'
+    if args.operation == 'parking':
         options = {k: getattr(args, k) for k in ['dictionary','marker_id','marker_size_mm','marker_forward_mm','marker_left_mm']
                    if getattr(args, k) is not None}
         if args.front_angle_deg is not None: options['forward_angle_deg'] = args.front_angle_deg
@@ -97,18 +117,31 @@ def main():
     if args.operation == 'locate':
         state[args.robot] = args.source or args.zone
         atomic_json(state_path, state); print('배치 기록만 저장:', state); return
-    if args.operation in ('move','both'):
+    if args.operation in ('move','both','wait'):
         with state_path.with_suffix('.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state = json.loads(state_path.read_text()) if state_path.exists() else state
             source = args.source or state[args.robot]
-            routes = [args.route] if args.route else route_ids(source, args.zone)
+            routes = (['handoff_to_home_'+args.zone] if args.operation == 'wait' else
+                      [args.route] if args.route else route_ids(source, args.zone))
+            if not args.route and routes and routes[-1].startswith('handoff_to_home_'):
+                from robot_gateway.hardware.wait_maneuvers import return_routes
+                other = 'P2' if args.robot == 'P1' else 'P1'
+                _, tail = return_routes(state.get(other),args.zone)
+                routes = routes[:-1]+tail
             arrival = {}
             for route in routes:
-                arrival = navigate(config, args.robot, route, command_for(args.robot, args.zone))
+                command = command_for(args.robot, args.zone)
+                command['route_version'] = args.route_version
+                if args.operation == 'wait' and route.startswith('handoff_to_home_'):
+                    command['join_return_from_current'] = True
+                arrival = navigate(config, args.robot, route, command)
                 print(json.dumps(arrival, ensure_ascii=False))
+                if route.startswith('handoff_to_home_') or route == 'queue_advance':
+                    state[args.robot] = 'front' if route == 'queue_advance' else route.removeprefix('handoff_to_home_')
+                    atomic_json(state_path,state)
             state[args.robot] = args.zone; atomic_json(state_path, state)
-            if args.parking:
+            if args.parking and args.operation != 'wait' and args.zone not in ('front','back'):
                 result = run_station(args.zone, {'operation':'parking','mode':'align','robot':args.robot,'zone':args.zone,
                     'options':{'start_at_observation': args.start_at_observation or arrival.get('parking_start') == 'observe'}})
                 print(json.dumps(result, ensure_ascii=False))

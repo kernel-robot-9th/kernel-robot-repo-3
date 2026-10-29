@@ -172,6 +172,7 @@ class Engine:
                    "checkout_requested": False, "current_task": None, "inventory": [],
                    "error": None, "created_at": self.clock(), "completed_at": None}
         self.state["sessions"][sid] = session
+        session['route_version'] = self.state.get('field_route_version', 4)
         self.state["robots"][available]["session_id"] = sid
         self._log("session_started", {"robot_id": available}, session_id=sid)
         return {"session_id": sid, "token": token, "robot_id": available}
@@ -317,6 +318,7 @@ class Engine:
                "mode": self.mode, "kind": kind, "zone_id": task["zone_id"], "items": deepcopy(task["items"]),
                "status": "CREATED", "created_at": self.clock(), "sent_at": None,
                "accepted_at": None, "result": None}
+        cmd['route_version'] = self._session(task['session_id']).get('route_version', 4)
         if kind == "HANDOFF":
             cmd["basket_id"] = self._session(task["session_id"])["basket_id"]
             cmd["basket_side"] = self._session(task["session_id"])["basket_side"]

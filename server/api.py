@@ -55,6 +55,10 @@ class FieldObservation(Input):
     operator: str = Field(default='현장 운영자', min_length=1, max_length=80, pattern=r'\S')
 
 
+class FieldRouteSelection(Input):
+    version: Literal[3,4]
+
+
 class TestRequest(Input):
     node_id: Literal['gateway-a', 'gateway-b', 'gateway-c']
     kind: Literal['PING', 'INSPECT', 'PICK', 'HANDOFF', 'NAVIGATE']
@@ -294,6 +298,38 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
     def admin_state(e=Depends(control)):
         return e.snapshot()
 
+    @app.get('/api/admin/field/camera-position', dependencies=[Depends(admin)])
+    def camera_position():
+        from robot_gateway.hardware.camera_navigation import observation
+        from robot_gateway.hardware.wait_parking import camera_view
+        return camera_view(observation())
+
+    @app.get('/api/admin/field/routes', dependencies=[Depends(admin)])
+    def field_routes(e=Depends(control)):
+        from robots.pinky import catalog, compact
+        def preview(module):
+            paths=module.bundle()[1]
+            return {name:[p for segment in segments if segment['direction'] for p in segment['poses']][::20]
+                    for name,segments in paths.items()}
+        deployed={}
+        from robot_gateway.hardware.station_remote import configuration
+        try:
+            deployed={robot:json.loads(Path(file).read_text()).get('route_modes')==[3,4]
+                      for robot,file in configuration()['profiles'].items()}
+        except FileNotFoundError:
+            pass
+        return {'selected':e.state.get('field_route_version',4), 'effective':'next_session', 'deployed':deployed,
+                'options':[{'version':3,'name':'기본 순환 경로','routes':preview(catalog)},
+                           {'version':4,'name':'작업대 간 단축 경로','routes':preview(compact)}],
+                'active':[{'robot_id':s['robot_id'],'route_version':s.get('route_version',4)}
+                          for s in e.state['sessions'].values() if s['state'] not in ('COMPLETED','ERROR')]}
+
+    @app.post('/api/admin/field/routes', dependencies=[Depends(admin)])
+    def select_field_route(body: FieldRouteSelection, e=Depends(control)):
+        if not isinstance(e, DistributedEngine):
+            raise HTTPException(409,'분산 관제에서 경로를 선택합니다')
+        return e.select_field_route(body.version)
+
     @app.get("/api/admin/logs", dependencies=[Depends(admin)])
     def logs(e=Depends(control)):
         return {"items": e.logs()}
@@ -418,6 +454,14 @@ def create_app(engine=None, admin_token=None, gateway_token=None, node_tokens=No
         content = await read_frame(request)
         e.node_work(principal, instance_id)
         video.publish(feed_id, principal, instance_id, sequence, content)
+        return {'received': True}
+
+    @app.post('/api/admin/video/{feed_id}/frame', dependencies=[Depends(admin)])
+    async def central_video(feed_id: str, request: Request, instance_id: str, sequence: int):
+        from .video import OWNERS
+        if feed_id not in OWNERS:
+            raise HTTPException(404, '영상 채널을 찾을 수 없습니다')
+        video.publish(feed_id, OWNERS[feed_id], instance_id, sequence, await read_frame(request))
         return {'received': True}
 
     @app.post('/api/video/overview/frame')

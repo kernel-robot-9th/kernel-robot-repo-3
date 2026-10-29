@@ -1,15 +1,85 @@
 """Perspective, ROS map rotation and real OpenCV detector compatibility checks."""
 import math
+import json
+from pathlib import Path
 import unittest
+import sys
 
 import cv2
 import numpy as np
 
 from robot_gateway.hardware.aruco_parking import detect_markers, front_angle
 from robot_gateway.hardware.overhead import fit_plane, map_pixel, marker_pose, project
+from scripts.pinky_overhead import select_anchor
+
+
+def test_number_keys_record_four_points_and_save_calibration(tmp_path, monkeypatch):
+    from scripts.pinky_overhead import main
+    map_file = tmp_path/'map.png'
+    cv2.imwrite(str(map_file), np.full((400, 500, 3), 255, np.uint8))
+    (tmp_path/'map.yaml').write_text('image: map.png\nresolution: 0.01\norigin: [-1, -2, 0]\n')
+    (tmp_path/'registry.json').write_text(json.dumps({'layout_to_map': {'x': 0, 'y': 0, 'yaw': 0}}))
+    config = {'output_directory': str(tmp_path/'out'), 'camera': {},
+              'calibration_file': str(tmp_path/'out/calibration.json'),
+              'robots_file': str(tmp_path/'out/robots.json'), 'layout_registry': str(tmp_path/'registry.json'),
+              'map_yaml': str(tmp_path/'map.yaml'), 'dictionary': 'DICT_5X5_1000'}
+    (tmp_path/'config.json').write_text(json.dumps(config))
+    book = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_1000)
+    code = (cv2.aruco.generateImageMarker(book, 0, 70) if hasattr(cv2.aruco, 'generateImageMarker')
+            else cv2.aruco.drawMarker(book, 0, 70))
+    images = []
+    for x, y in [(60, 60), (360, 60), (60, 260), (360, 260)]:
+        frame = np.full((400, 500), 255, np.uint8)
+        frame[y:y+70, x:x+70] = code
+        images.append(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))
+    position = [0]
+    original_read = cv2.imread
+    monkeypatch.setattr(cv2, 'imread', lambda path: images[position[0]].copy() if path == 'test-camera' else original_read(path))
+    keys = iter([ord('1'), 13, ord('2'), 13, ord('3'), 13, ord('4'), 13, ord('s'), ord('q')])
+    def keypress(*_):
+        key = next(keys)
+        if key == 13:
+            position[0] = min(position[0]+1, 3)
+        return key
+    for name in ['namedWindow', 'setMouseCallback', 'imshow', 'destroyAllWindows']:
+        monkeypatch.setattr(cv2, name, lambda *a, **k: None)
+    monkeypatch.setattr(cv2, 'waitKey', keypress)
+    monkeypatch.setattr(cv2, 'VideoCapture', lambda *_: (_ for _ in ()).throw(AssertionError('no live camera')))
+    monkeypatch.setattr(sys, 'argv', ['pinky_overhead', 'calibrate', '--config', str(tmp_path/'config.json'),
+                        '--anchors-file', 'config/pinky-overhead-anchors.example.json',
+                        '--plane-height-mm', '143', '--marker-id', '0', '--image', 'test-camera'])
+    main()
+    saved = json.loads((tmp_path/'out/calibration.json').read_text())
+    assert saved['plane_height_m'] == .143
+    assert [p['anchor_id'] for p in saved['points']] == [1, 2, 3, 4]
+    assert saved['fit_max_m'] < 1e-5
 
 
 class OverheadGeometryTest(unittest.TestCase):
+    def test_field_anchors_match_tape_distances_and_stay_in_aisle(self):
+        config = json.loads(Path('config/pinky-overhead-anchors.example.json').read_text())
+        self.assertEqual(config['plane_height_mm'], 143)
+        self.assertEqual([a['id'] for a in config['points']], [1, 2, 3, 4])
+        for anchor in config['points']:
+            x, y = anchor['layout_xy']
+            self.assertAlmostEqual(x, anchor['from_left_mm']/1000)
+            self.assertAlmostEqual(config['depth_m']+y, anchor['from_waiting_edge_mm']/1000)
+            self.assertLess(y, -.75)
+
+    def test_numbered_anchor_uses_perspective_marker_centre_and_registered_map(self):
+        h = np.array([[.002, -.0003, -.5], [.0001, -.002, 1.8], [.00005, .0001, 1.]])
+        transform = {'x': .1, 'y': .2, 'yaw': -.4}
+        anchor = {'id': 3, 'layout_xy': [.3, -1.3]}
+        x, y = anchor['layout_xy']
+        center = np.array([.1+math.cos(-.4)*x-math.sin(-.4)*y,
+                           .2+math.sin(-.4)*x+math.cos(-.4)*y])
+        world = np.array([[-.04, .04], [.04, .04], [.04, -.04], [-.04, -.04]])+center
+        marker = {'corners': project(world, np.linalg.inv(h)).tolist()}
+        selected = select_anchor(anchor, marker, transform)
+        np.testing.assert_allclose(selected['map_xy'], center, atol=1e-10)
+        np.testing.assert_allclose(project([selected['pixel']], h)[0], center, atol=2e-6)
+        self.assertEqual(selected['anchor_id'], 3)
+
     def test_perspective_fit_at_independent_point(self):
         camera_to_map = np.array([[.002, -.0003, -.5], [.0001, -.002, 1.8], [.00005, .0001, 1.]])
         image = np.array([[90, 80], [900, 100], [1100, 620], [120, 650], [550, 170], [700, 490]])

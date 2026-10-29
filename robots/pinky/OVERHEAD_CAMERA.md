@@ -2,6 +2,10 @@
 
 > **2026-10-27 최신 순서:** 큰 마커 검출·설치 확정 후 좌표를 등록하고 실제 주행 위치 보정에 연결한다. 아래 도구는 좌표 표시·기록 단계이며 ROS 위치 보정 완료 상태가 아니다. 전체 순서와 완료 여부는 [남은 작업표](CAMERA_NAV_DEMO_PLAN.md)를 따른다.
 
+대기자리 두 곳 × 두 로봇의 목표를 먼저 남기는 명령은 [대기 목표 기록](WAIT_TARGET_RECORDING.md)에 있다. 캘리 전에도 영상 목표를 저장할 수 있다. `robot` 모드의 `--marker-id`·`--front-angle-deg` 옵션을 사용하면 앞방향 마우스 클릭을 생략할 수 있다.
+
+현재 현장용 **줄자 거리표와 1~4 번호 선택 캘리**는 [네 기준점 현장 절차](OVERHEAD_CALIBRATION_FIELD.md)를 따른다. 공통 마커 면 높이는 143mm다.
+
 이 도구는 **관제 Ubuntu 노트북**에서 실행한다. ROS 연결·주행·팔 동작은 없다.
 전체 카메라 위치 보정용이며 A/B/C 구역 카메라의 정밀주차 목표·OMX 캘리는 바꾸지 않는다.
 
@@ -26,7 +30,7 @@ bash scripts/run_pinky_overhead.sh view
 - 실제 P1/P2와 ID를 대응한다. 두 로봇은 구별 가능한 마커를 사용한다.
 - Q로 종료한다. 여러 사전이 같은 마커를 검출하면 실제 인쇄한 사전을 `--dictionary DICT_...`로 지정한다.
 - 설정은 `runtime/field/pinky-overhead.json`이 있으면 그 파일, 없으면 `config/pinky-overhead.example.json`을 읽는다.
-- 현재 기본 카메라는 SNAP U2의 고정 by-id 경로이며 MJPEG 1280×720, 30fps다.
+- 현재 현장 설정과 기본 예시는 SNAP U2의 고정 by-id 경로, MJPEG 1920×1080, 요청 30fps다. 실제 처리 fps는 검출량에 따라 달라진다.
 
 ## 2. 상단 높이 평면의 영상·지도 캘리
 

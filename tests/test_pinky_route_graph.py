@@ -2,10 +2,52 @@ import math
 from types import SimpleNamespace as Obj
 import unittest
 
-from robots.pinky.route_graph import build_graph, directed_path, observation_arrival, departure_path
+from robots.pinky.route_graph import build_graph, directed_path, observation_arrival, departure_path, observation_heading, path_goal_checker
 
 
 class RouteGraphTest(unittest.TestCase):
+    def test_v3_all_station_and_return_transits_use_position_checker(self):
+        from robots.pinky import catalog
+        checked=set()
+        for name in ('home_to_A','home_to_B','home_to_handoff','A_to_B','A_to_handoff',
+                     'B_to_handoff','handoff_to_home_front','handoff_to_home_back'):
+            for original in catalog.route(name).segments:
+                segment=dict(name=original.name,direction=original.direction,poses=original.poses)
+                if original.direction == 1:
+                    self.assertEqual(path_goal_checker(segment,3),'observation_goal_checker')
+                    checked.add(original.name)
+                else:
+                    self.assertEqual(path_goal_checker(segment,3),'general_goal_checker')
+                self.assertEqual(path_goal_checker(segment,4),'general_goal_checker')
+        self.assertTrue({'dock_leave','exit','road','entry'} <= checked)
+
+    def test_transit_policy_keeps_dock_heading_and_camera_parking_separate(self):
+        transit=dict(name='dock_leave',direction=1,poses=[[0,0,0],[1,0,.35]])
+        dock=dict(name='dock_reverse',direction=-1,poses=[[1,0,0],[2,0,0]],
+                  goal_checker_id='observation_goal_checker')
+        segments=[transit,dict(name='align_turn',direction=0,poses=[[1,0,0]]),dock]
+        result=observation_heading(segments)
+        self.assertEqual([s['name'] for s in result],
+                         ['dock_leave','align_turn','dock_reverse','observation_heading'])
+        self.assertEqual(path_goal_checker(result[0],3),'observation_goal_checker')
+        self.assertNotIn('goal_checker_id',transit)  # Request policy must not add a transit spin.
+        self.assertEqual(path_goal_checker(result[2],3),'observation_goal_checker')
+        camera=dict(name='waiting_back_curve',direction=1,camera_guided=True)
+        self.assertEqual(path_goal_checker(camera,3),'general_goal_checker')
+
+    def test_observation_position_and_heading_are_separate_without_changing_route(self):
+        # The field failure reached within 5mm but retained a 175-degree heading error.
+        goal = [.915586233, 1.003736973, 3.099638309]
+        segments = [{'name':'home_to_dock', 'direction':-1,
+                     'goal_checker_id':'observation_goal_checker', 'poses':[[0,0,0], goal]}]
+        result = observation_heading(segments)
+        self.assertEqual(len(segments), 1)
+        self.assertIs(result[0], segments[0])
+        self.assertEqual(result[-1], {'name':'observation_heading', 'direction':0, 'poses':[goal]})
+        self.assertEqual(observation_heading(result), result)  # Never append a second spin.
+        waiting = [{'name':'queue_advance', 'direction':1, 'poses':[[0,0,0], [0,1,0]]}]
+        self.assertIs(observation_heading(waiting), waiting)
+
     def test_offset_departures_start_behind_robot_and_keep_existing_lane(self):
         # Two failed field starts, before rotation. The fixed start was 14cm away.
         start = [-.039589514, 1.084466249, -3.111759846]

@@ -6,6 +6,7 @@ import time
 
 from .pinky import PinkyFleet, atomic_json
 from .station_remote import configuration, run_station
+from .wait_maneuvers import return_routes
 from scripts.pinky_control import route_ids
 
 
@@ -38,16 +39,16 @@ class ControlFleet(PinkyFleet):
                 if zone in ('A','B'):
                     destination, routes = zone+'_exit', ['exit_'+zone]
                 else:
-                    # The return lane passes the back position: advance its occupant first.
-                    if state[other] == 'back':
-                        travel(other, 'queue_advance')
-                        state[other] = 'front'; atomic_json(self.state_path, state)
-                    destination = 'back' if state[other] == 'front' else 'front'
-                    routes = ['handoff_to_home_'+destination]
+                    destination, routes = return_routes(state[other])
             else:
                 destination = zone
                 routes = route_ids(state[robot], zone)
-            results = [travel(robot, route) for route in routes]
+            results = []
+            for route in routes:
+                results.append(travel(robot,route))
+                state[robot] = ('front' if route == 'queue_advance' else
+                    route.removeprefix('handoff_to_home_') if route.startswith('handoff_to_home_') else destination)
+                atomic_json(self.state_path,state)
             state[robot] = destination
             atomic_json(self.state_path, state)
             result = {'routes': results, 'location': destination, 'nav2_completed': True}

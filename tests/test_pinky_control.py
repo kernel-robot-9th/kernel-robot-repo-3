@@ -70,7 +70,7 @@ def test_home_curve_flows_into_dock_without_intermediate_arrival(tmp_path):
         assert moving[0]['poses'][-len(dock):] == dock
 
 
-def test_return_advances_back_robot_then_uses_vacant_back(tmp_path):
+def test_return_keeps_back_robot_and_reverse_parks_front(tmp_path):
     from robot_gateway.hardware.control_fleet import ControlFleet
     path = tmp_path/'state.json'; path.write_text(json.dumps({'P1':'C','P2':'back'}))
     fleet = ControlFleet.__new__(ControlFleet); fleet.state_path = path
@@ -80,9 +80,9 @@ def test_return_advances_back_robot_then_uses_vacant_back(tmp_path):
     with patch('robot_gateway.hardware.pinky.PinkyFleet.execute', execute):
         result = fleet.execute({'kind':'LEAVE','robot_id':'pinky-1','device_id':'pinky-1',
                                 'zone_id':'handoff'},threading.Event())
-    assert calls == [('pinky-2','queue_advance'),('pinky-1','handoff_to_home_back')]
-    assert json.loads(path.read_text()) == {'P1':'back','P2':'front'}
-    assert result['location'] == 'back'
+    assert calls == [('pinky-1','handoff_to_home_front')]
+    assert json.loads(path.read_text()) == {'P1':'front','P2':'back'}
+    assert result['location'] == 'front'
 
 
 def test_c_station_uses_ros_python_for_parking_and_il_python_for_arm():

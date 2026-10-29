@@ -3,6 +3,64 @@ import math
 from copy import deepcopy
 
 
+def return_from_current(route, current):
+    """Start at the nearest existing return-lane node, keeping directed suffixes."""
+    route = deepcopy(route)
+    choices = []
+    for index, segment in enumerate(route['segments']):
+        if not segment['direction'] or segment.get('camera_guided'):
+            continue
+        points = []
+        for point in segment['poses']:
+            if not points or math.dist(points[-1][:2], point[:2]) > 1e-8:
+                points.append(point)
+        segment['poses'] = points
+        for offset, point in enumerate(points[:-1]):
+            choices.append((math.dist([current['x'], current['y']], point[:2]), index, offset))
+    _, index, offset = min(choices)
+    route['segments'] = route['segments'][index:]
+    first = route['segments'][0]
+    first['start_id'] += offset
+    first['poses'] = first['poses'][offset:]
+    return route
+
+
+def return_join_segments(segments, current):
+    """Face a short curved connection, then follow the computed return route."""
+    segments = deepcopy(segments)
+    first = segments[0]
+    poses = first['poses']
+    travelled, join = 0., 0
+    for join in range(1, len(poses)):
+        travelled += math.dist(poses[join-1][:2], poses[join][:2])
+        if travelled >= .15:
+            break
+    start, end = [current['x'], current['y']], poses[join][:2]
+    travel = math.atan2(end[1]-start[1], end[0]-start[0])
+    reverse = math.pi if first['direction'] < 0 else 0.
+    tangent = poses[join][2]+reverse
+    handle = math.dist(start, end)/3
+    controls = [start, [start[0]+handle*math.cos(travel), start[1]+handle*math.sin(travel)],
+                [end[0]-handle*math.cos(tangent), end[1]-handle*math.sin(tangent)], end]
+    count = max(1, math.ceil(sum(math.dist(a,b) for a,b in zip(controls, controls[1:]))/.005))
+    path = []
+    for i in range(count):
+        t = i/count
+        weights = [(1-t)**3, 3*(1-t)**2*t, 3*(1-t)*t*t, t**3]
+        point = [sum(w*p[j] for w,p in zip(weights, controls)) for j in range(2)]
+        derivative = [sum(w*(b[j]-a[j]) for w,a,b in
+                          zip([(1-t)**2, 2*(1-t)*t, t*t], controls, controls[1:])) for j in range(2)]
+        yaw = math.atan2(derivative[1], derivative[0])+reverse
+        path.append(point+[math.atan2(math.sin(yaw), math.cos(yaw))])
+    first['poses'] = path+poses[join:]
+    initial = [current['x'], current['y'], current['yaw']]
+    goal = segments[-1]['poses'][-1][:]
+    final = [] if segments[-1]['direction'] == 0 or segments[-1].get('camera_guided') else [
+        {'name':'waiting_heading', 'direction':0, 'poses':[goal]}]
+    return ([{'name':'face_return_join', 'direction':0, 'poses':[initial, first['poses'][0]]}]
+            + segments + final)
+
+
 def departure_path(poses, current, *, align_heading=False):
     """Join the actual pose to the end of the existing 30cm departure straight."""
     distance, join = 0., 0
@@ -45,6 +103,21 @@ def observation_arrival(plan, observation):
     return plan
 
 
+def observation_heading(segments):
+    """Finish camera-observation arrivals with Spin after position-only FollowPath."""
+    if not segments or segments[-1].get('goal_checker_id') != 'observation_goal_checker':
+        return segments
+    goal = segments[-1]['poses'][-1][:]
+    return segments + [{'name': 'observation_heading', 'direction': 0, 'poses': [goal]}]
+
+
+def path_goal_checker(segment, version):
+    """V3 transit points finish by position; turns and camera parking own heading."""
+    if version == 3 and segment['direction'] == 1 and not segment.get('camera_guided'):
+        return 'observation_goal_checker'  # Existing PositionGoalChecker, 5cm.
+    return segment.get('goal_checker_id', 'general_goal_checker')
+
+
 def build_graph(plans):
     features, routes = [], {}
     node_id, edge_id = 0, 0
@@ -75,6 +148,8 @@ def build_graph(plans):
                                     'registration_sha256': plan['registration_sha256']}
         if plan.get('parking_start'):
             routes[plan['route_id']]['parking_start'] = plan['parking_start']
+        if plan.get('waiting_slot'):
+            routes[plan['route_id']]['waiting_slot'] = plan['waiting_slot']
     return {'type': 'FeatureCollection', 'features': features}, {'routes': routes}
 
 
