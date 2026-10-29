@@ -124,6 +124,8 @@ def main():
             source = args.source or state[args.robot]
             routes = (['handoff_to_home_'+args.zone] if args.operation == 'wait' else
                       [args.route] if args.route else route_ids(source, args.zone))
+            if args.operation == 'wait' and source in ('A', 'B'):
+                routes.insert(0, 'exit_'+source)
             if not args.route and routes and routes[-1].startswith('handoff_to_home_'):
                 from robot_gateway.hardware.wait_maneuvers import return_routes
                 other = 'P2' if args.robot == 'P1' else 'P1'
@@ -137,7 +139,10 @@ def main():
                     command['join_return_from_current'] = True
                 arrival = navigate(config, args.robot, route, command)
                 print(json.dumps(arrival, ensure_ascii=False))
-                if route.startswith('handoff_to_home_') or route == 'queue_advance':
+                if route in ('exit_A', 'exit_B'):
+                    state[args.robot] = route[-1]+'_exit'
+                    atomic_json(state_path,state)
+                elif route.startswith('handoff_to_home_') or route == 'queue_advance':
                     state[args.robot] = 'front' if route == 'queue_advance' else route.removeprefix('handoff_to_home_')
                     atomic_json(state_path,state)
             state[args.robot] = args.zone; atomic_json(state_path, state)

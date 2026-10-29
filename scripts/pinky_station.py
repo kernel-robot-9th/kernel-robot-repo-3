@@ -77,6 +77,11 @@ def execute(request):
     method = getattr(arm, {'STOP': 'stop', 'STOP_POLICY': 'stopped'}.get(command['kind'], 'execute'))
     try:
         return method(command, cancelled)
+    except Exception as exc:
+        print('CARTRINA_ERROR='+json.dumps({'reason': str(exc),
+            'executed_items': getattr(arm, 'executed', []) if command['kind'] == 'PICK' else [],
+            'physical_loading_confirmed': False}, ensure_ascii=False), flush=True)
+        raise
     finally:
         done.set()
 

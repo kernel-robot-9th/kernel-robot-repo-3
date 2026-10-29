@@ -14,6 +14,28 @@ def ready(value):
     return future
 
 
+def test_connection_uses_hybrid_planner_current_pose_and_body_headings():
+    mobile = PinkyMobile.__new__(PinkyMobile)
+    mobile.profile = {'frame_id':'map', 'entry_planner_id':'BasketEntry'}
+    def goal():
+        return SimpleNamespace(goal=SimpleNamespace(header=SimpleNamespace(),
+            pose=SimpleNamespace(position=SimpleNamespace(), orientation=SimpleNamespace())))
+    mobile.planner_type = SimpleNamespace(Goal=goal)
+    # Body heading remains forward even though this piece moves backward.
+    points = [SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=x,y=0.),
+        orientation=SimpleNamespace(x=0.,y=0.,z=0.,w=1.))) for x in [1.,.9,.8]]
+    result = SimpleNamespace(status=4,result=SimpleNamespace(error_code=0,error_msg='',
+        path=SimpleNamespace(poses=points)))
+    handle = SimpleNamespace(accepted=True,get_result_async=lambda:ready(result))
+    mobile.planner_action = Mock()
+    mobile.planner_action.send_goal_async.return_value = ready(handle)
+    poses = mobile._plan_connection([.8,0.,0.],threading.Event(),lambda _:None,Mock())
+    request = mobile.planner_action.send_goal_async.call_args.args[0]
+    assert request.planner_id == 'BasketEntry' and request.use_start is False
+    assert request.goal.header.frame_id == 'map'
+    assert poses == [[1.,0.,0.],[.9,0.,0.],[.8,0.,0.]]
+
+
 @pytest.mark.parametrize('lost_phase', ['acceptance', 'result'])
 def test_only_missing_route_response_is_retried_once(lost_phase):
     mobile = PinkyMobile.__new__(PinkyMobile)

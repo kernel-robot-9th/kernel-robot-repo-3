@@ -14,13 +14,37 @@ class SharedCamera:
         self.camera, self.publisher, self.channel = camera, publisher, channel
         self.closed, self.ready, self.lock = threading.Event(), threading.Event(), threading.Lock()
         self.latest, self.error = None, None
+        self.reconnected = False
         self.thread = threading.Thread(target=self._read, daemon=True)
         self.thread.start()
 
     def _read(self):
         try:
             while not self.closed.is_set():
-                frame, captured = self.camera.read()
+                try:
+                    frame, captured = self.camera.read()
+                except (RuntimeError, OSError):
+                    if self.reconnected or not hasattr(self.camera, 'reopen'):
+                        raise
+                    self.reconnected = True
+                    self.ready.clear()
+                    with self.lock:
+                        self.latest = None
+                    print('[CAMERA] 연결 끊김: 최대 5초 동안 재연결', flush=True)
+                    deadline = time.monotonic()+5
+                    while not self.closed.is_set():
+                        try:
+                            self.camera.reopen()
+                            frame, captured = self.camera.read()
+                            print('[CAMERA] 새 프레임 수신: 다음 상품 계속', flush=True)
+                            break
+                        except (RuntimeError, OSError):
+                            remaining = deadline-time.monotonic()
+                            if remaining <= 0:
+                                raise
+                            self.closed.wait(min(.25, remaining))
+                    else:
+                        return
                 with self.lock:
                     self.latest = (frame, captured)
                 self.publisher.offer(self.channel, frame)
@@ -30,7 +54,7 @@ class SharedCamera:
             self.ready.set()
 
     def read(self):
-        if not self.ready.wait(3) or self.error:
+        if not self.ready.wait(6) or self.error:
             raise RuntimeError('작업대 카메라 수신 실패') from self.error
         with self.lock:
             if not self.latest or time.monotonic() - self.latest[1] > 1:

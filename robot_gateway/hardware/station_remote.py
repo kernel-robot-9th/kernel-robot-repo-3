@@ -8,6 +8,12 @@ import threading
 import uuid
 
 
+class StationError(RuntimeError):
+    def __init__(self, zone, result):
+        super().__init__(zone+' 현장 실행 실패: '+result.get('reason', '위 원인 로그 확인'))
+        self.executed_items = result.get('executed_items', [])
+
+
 def configuration():
     return json.loads(Path('runtime/field/pinky-control.json').read_text())
 
@@ -47,7 +53,7 @@ def run_station(zone, request, config=None, cancelled=None, frames=None):
                 cancel_remote()
                 return
     threading.Thread(target=cancellation, daemon=True).start()
-    result = None
+    result, failure = None, {}
     try:
         for line in process.stdout:
             if line.startswith('CARTRINA_FRAME='):
@@ -59,6 +65,8 @@ def run_station(zone, request, config=None, cancelled=None, frames=None):
                     frames.offer(channel, frame)
             elif line.startswith('CARTRINA_RESULT='):
                 result = json.loads(line.partition('=')[2])
+            elif line.startswith('CARTRINA_ERROR='):
+                failure = json.loads(line.partition('=')[2])
             else:
                 print(line, end='', flush=True)
         code = process.wait()
@@ -72,7 +80,7 @@ def run_station(zone, request, config=None, cancelled=None, frames=None):
     finally:
         done.set(); process.stdout.close()
     if code:
-        raise RuntimeError(zone+' 현장 실행 실패: 위 원인 로그 확인')
+        raise StationError(zone, failure)
     return result or {}
 
 
@@ -82,8 +90,18 @@ class RemoteArm:
         self.frames = frames
 
     def execute(self, command, cancelled):
-        return run_station(self.zone, {'operation': 'arm', 'zone': self.zone, 'command': command},
-                           cancelled=cancelled, frames=self.frames)
+        if command['kind'] == 'PICK':
+            self.executed = []
+        try:
+            result = run_station(self.zone, {'operation': 'arm', 'zone': self.zone, 'command': command},
+                                 cancelled=cancelled, frames=self.frames)
+        except StationError as exc:
+            if command['kind'] == 'PICK':
+                self.executed = exc.executed_items.copy()
+            raise
+        if command['kind'] == 'PICK':
+            self.executed = result.get('executed_items', []).copy()
+        return result
 
     stop = execute
     stopped = execute

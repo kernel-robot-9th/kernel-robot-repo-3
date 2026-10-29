@@ -166,7 +166,7 @@ class DistributedEngine(Engine):
         data = {'observation': observation}
         if observation == 'finish':
             data['finished'] = True
-        for item in self.state['sessions'][command['session_id']]['inventory']:
+        for item in [i for run in self._runs(self._session(command['session_id'])) for i in run['inventory']]:
             if item['load_command_id'] == command_id and observation == 'pick-'+str(item['slot']):
                 item['physical_loading_confirmed'] = True
             if item.get('handoff_command_id') == command_id and observation == 'delivered':

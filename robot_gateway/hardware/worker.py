@@ -17,6 +17,20 @@ from robot_gateway.runtime import save_state
 from .field_status import FieldEvidence, FieldStatus
 
 
+def claim_command(client, identity):
+    try:
+        return client.call('/api/nodes/commands/claim', identity)['command']
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            try:
+                detail = json.loads(exc.read()).get('detail')
+            except (ValueError, AttributeError):
+                detail = None
+            if detail == '중단된 작업입니다':
+                return None
+        raise
+
+
 class Executor:
     def __init__(self, config, evidence, frames, status=None):
         self.config, self.evidence, self.frames = config, evidence, frames
@@ -144,7 +158,7 @@ def main():
                         try:
                             event = future.result()
                         except Exception as exc:
-                            event = make_event(command, 'FAILED', {'executed_items': getattr(executor.arm, 'executed', []).copy()
+                            event = make_event(command, 'FAILED', {'executed_items': getattr(exc, 'executed_items', getattr(executor.arm, 'executed', [])).copy()
                                 if command['kind'] == 'PICK' else [], 'basket_id': command.get('basket_id'), 'reason': str(exc)[:200]})
                         state['pending'].append(event)
                         state['inflight'].pop(cid, None); jobs.pop(cid); persist()
@@ -152,7 +166,7 @@ def main():
                     continue
                 work = client.call('/api/nodes/work', identity)
                 status.receive(work.get('operator_observations', {}))
-                command = client.call('/api/nodes/commands/claim', identity)['command']
+                command = claim_command(client, identity)
                 if command:
                     if command['kind'] in {'STOP', 'STOP_POLICY'}:
                         for _, cancelled, running in jobs.values():
