@@ -5,8 +5,9 @@ export interface Product {
   stock: { on_hand: number; reserved: number } | null; available: number | null;
 }
 export interface Item { sku: string; slot: number; item_id: string }
-export interface InventoryItem extends Item { physical_loading_confirmed?: boolean; physical_delivery_confirmed?: boolean; delivered: boolean; load_command_id: string; handoff_command_id: string | null }
+export interface InventoryItem extends Item { robot_id?: string; physical_loading_confirmed?: boolean; physical_delivery_confirmed?: boolean; delivered: boolean; load_command_id: string; handoff_command_id: string | null }
 export interface Session {
+  robot_ids?: string[]; robot_runs?: Record<string, Session>;
   id: string; label: string; robot_id: string; basket_id: string; state: string; checkout_requested: boolean;
   current_task: string | null; inventory: InventoryItem[]; error: string | null;
   created_at: number; completed_at: number | null;
@@ -24,6 +25,7 @@ export interface Command {
   result: { kind: string; data: Record<string, unknown> } | null;
 }
 export interface Snapshot {
+  handoff_arrival_only?: boolean;
   hardware_motion?: Record<string, FieldMotionStatus>;
   motion_backend?: string; route_version?: number;
   run_id: string; mode: 'mock' | 'hardware'; test_only: boolean; test_hold: string | null; sessions: Record<string, Session>; orders: Record<string, Order>;

@@ -91,7 +91,8 @@ async function order() {
   })
 }
 async function checkout() {
-  if (!window.confirm('주문을 마감하고 인계할까요? 3개씩 운반하며 남은 상품은 자동으로 다시 가져옵니다.')) return
+  const message = state.value?.handoff_arrival_only ? '주문을 마감할까요? 두 대 적재 후 P1만 C로 이동하고 하역 없이 대기합니다.' : '주문을 마감하고 인계할까요?'
+  if (!window.confirm(message)) return
   await action(async () => { await api('/customer/checkout', token.value, {}); tab.value = 'shopping' })
 }
 async function cancel(orderId: string) {
@@ -107,6 +108,7 @@ const delivered = computed(() => session.value?.inventory.filter(i => i.delivere
 const stage = computed(() => session.value?.state === 'COMPLETED' ? 3 : session.value?.checkout_requested ? 2 : ordered.value ? 1 : 0)
 const statusTitle = computed(() => {
   if (session.value?.error) return '작업 중단'
+  if (session.value?.state === 'WAIT_UNLOAD') return 'C 도착 · 하역 대기'
   if (session.value?.state === 'COMPLETED') return '시연 흐름 완료'
   if (task.value?.state === 'WAIT_BASKET') return '장바구니 대기'
   if (task.value?.state === 'WAIT_ZONE') return '작업 대기'
@@ -133,7 +135,7 @@ onMounted(refresh)
       <section v-else class="panel start-panel"><span class="welcome-icon"><Icon name="robot" :size="34" /></span><h2>쇼핑 시작</h2><form @submit.prevent="start"><label for="customer-name">고객 이름</label><input id="customer-name" v-model="name" maxlength="40" required autocomplete="name" placeholder="예: 김쇼핑" /><button class="primary" :disabled="busy || !name.trim() || !acceptingSessions || !!connectionError">{{ busy ? '시작하는 중…' : '쇼핑 시작하기' }}<Icon name="arrow" :size="18" /></button></form></section>
     </template>
     <template v-else-if="session">
-      <section class="assignment"><span class="assignment-icon"><Icon name="robot" :size="27" /></span><div><small>{{ session.label }}</small><strong>{{ robotName(session.robot_id) }}</strong></div><span class="pill">{{ session.basket_side === 'left' ? '왼쪽 장바구니' : session.basket_side === 'right' ? '오른쪽 장바구니' : '장바구니 대기' }}</span></section>
+      <section class="assignment"><span class="assignment-icon"><Icon name="robot" :size="27" /></span><div><small>{{ session.label }}</small><strong>{{ (session.robot_ids || [session.robot_id]).map(robotName).join(' · ') }}</strong></div><span class="pill">{{ session.basket_side === 'left' ? '왼쪽 장바구니' : session.basket_side === 'right' ? '오른쪽 장바구니' : '장바구니 대기' }}</span></section>
       <nav class="customer-tabs" aria-label="고객 메뉴"><button :class="{ active: tab === 'products' }" :aria-current="tab === 'products' ? 'page' : undefined" @click="tab = 'products'"><Icon name="cart" :size="18" />상품 고르기</button><button :class="{ active: tab === 'shopping' }" :aria-current="tab === 'shopping' ? 'page' : undefined" @click="tab = 'shopping'"><Icon name="orders" :size="18" />내 주문<span v-if="ordered" class="count-badge">{{ ordered }}</span></button></nav>
       <section v-if="tab === 'products'" class="catalog-section">
         <div class="catalog-toolbar"><span>{{ products.length }}종</span><span class="pill">최대 6개</span></div>
@@ -150,8 +152,9 @@ onMounted(refresh)
         <section class="order-summary panel"><details v-if="selectedProducts.length"><summary>선택한 상품 보기 <span>{{ selected }}개</span></summary><div v-for="p in selectedProducts" :key="p.sku" class="selected-line"><span>{{ p.name }}</span><span class="selection-actions"><strong v-if="quantities[p.sku] > 1">×{{ quantities[p.sku] }}</strong><button class="remove-selection" :aria-label="p.name + ' 선택에서 1개 빼기'" :disabled="busy || !!pendingOrder" @click="remove(p)">빼기</button></span></div></details><p v-if="!selectionAvailable && !pendingOrder" class="alert danger" role="status">주문 가능 수량 초과</p><p v-if="pendingOrder" class="inline-note" role="status">주문 응답 미확인</p><div class="order-bar"><div aria-live="polite" aria-atomic="true"><small>{{ pendingOrder ? '접수 확인 중' : '선택한 상품' }}</small><strong>{{ pendingOrder ? pendingOrder.items.reduce((n, i) => n + i.quantity, 0) : selected }}<span>개</span></strong></div><button class="primary" :disabled="busy || !canOrder || (!pendingOrder && (selected === 0 || selected > 6 || !selectionAvailable))" @click="order">{{ busy ? '처리 중…' : pendingOrder ? '주문 접수 다시 확인' : '주문하기' }}<Icon name="arrow" :size="18" /></button></div></section>
       </section>
       <section v-else class="shopping-status">
-        <section class="panel customer-progress"><h2>{{ statusTitle }}</h2><p v-if="trip" class="muted">{{ trip.number }}차 운반 · 현재 카트 {{ session.inventory.length - delivered }}/3개</p><ol class="order-steps" aria-label="주문 진행 단계"><li v-for="(step, i) in ['상품 선택', '상품 준비', '인계 요청', '시연 흐름 완료']" :key="step" :class="{ done: i < stage, current: i === stage }" :aria-current="i === stage ? 'step' : undefined"><span><Icon v-if="i < stage" name="check" :size="15" /><template v-else>{{ i + 1 }}</template></span>{{ step }}</li></ol></section>
+        <section class="panel customer-progress"><h2>{{ statusTitle }}</h2><p v-if="trip" class="muted">{{ trip.number }}차 운반 · 현재 카트 {{ session.inventory.length - delivered }}/{{ (session.robot_ids?.length || 1) * 3 }}개</p><ol class="order-steps" aria-label="주문 진행 단계"><li v-for="(step, i) in ['상품 선택', '상품 준비', '인계 요청', '시연 흐름 완료']" :key="step" :class="{ done: i < stage, current: i === stage }" :aria-current="i === stage ? 'step' : undefined"><span><Icon v-if="i < stage" name="check" :size="15" /><template v-else>{{ i + 1 }}</template></span>{{ step }}</li></ol></section>
         <div v-if="session.error" class="alert danger" role="alert"><strong>작업 중단</strong><p>{{ session.error }}</p></div>
+        <p v-if="session.state === 'WAIT_UNLOAD'" class="notice">C 구역 도착 · 이번 시험은 여기까지입니다. 하역은 실행하지 않았습니다.</p>
         <div class="metrics"><article><span>주문한 상품</span><strong>{{ ordered }}<small>개</small></strong></article><article><span>적재 실행</span><strong>{{ session.inventory.length }}<small>개</small></strong></article><article><span>인계 실행</span><strong>{{ delivered }}<small>개</small></strong></article></div>
         <section v-if="ordered && !session.checkout_requested" class="panel checkout-panel"><button class="primary" :disabled="busy || !!session.error || !!pendingOrder || !!connectionError" @click="checkout">주문 마감 · 상품 받기<Icon name="arrow" :size="18" /></button><button class="text-link" :disabled="!canOrder" @click="tab = 'products'">상품 더 고르기</button></section>
         <section v-else-if="session.checkout_requested && session.state !== 'COMPLETED'" class="inline-note"><Icon name="clock" /><span>인계 요청 접수</span></section>
