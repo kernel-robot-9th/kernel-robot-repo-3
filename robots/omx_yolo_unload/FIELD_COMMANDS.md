@@ -1,6 +1,8 @@
 # C YOLO 하역 — 전달·현장 기록·시험 명령
 
-2026-10-30 · 코드 준비됨, **C 배포·캘리·실물 시험은 아직 하지 않음**.
+관제 연결 최신 상태·확인 후 복귀 절차: [CONTROL_HANDOFF_STATUS.md](CONTROL_HANDOFF_STATUS.md).
+
+2026-10-30 · C 현장 기록·단독 시험 및 관제 연결 완료. **아래 init·캘리 절차는 최초 준비용이며 현재 현장 설정을 다시 만들지 않는다.**
 아래 장비 명령은 C 노트북의 그래픽 데스크톱 터미널에서 사용한다.
 
 ## 1. 코드 전달
@@ -26,10 +28,10 @@ Git을 사용할 수 없는 경우 `scripts/package_c_yolo.py`로 소스 패키�
 기존 C 가상환경에서 필요한 모듈을 읽을 수 있으면 그 환경을 사용한다. 먼저 확인:
 
 ```bash
-C_PY=/home/team2/venv/il/bin/python
+C_PY=/home/team2/robot_shopping/kernel-robot-repo-3/runtime/field/c-yolo-venv/bin/python
 env -u PYTHONPATH -u PYTHONHOME "$C_PY" -c 'import cv2, numpy, ultralytics, dynamixel_sdk, tkinter; print("C YOLO 의존성 준비됨")'
 ls -l /dev/serial/by-id/ /dev/v4l/by-id/
-ls -l robots/omx_yolo/weights/best.pt
+ls -l runtime/field/c-yolo/training_4class_20261030/prepared_models/best_original.pt
 ```
 
 의존성이 없으면 기존 ACT/VLA 환경을 변경하지 않고 별도 환경을 준비한다. 필요할 때만:
@@ -40,7 +42,7 @@ C_PY="$PWD/runtime/field/c-yolo-venv/bin/python"
 "$C_PY" -m pip install -r robots/omx_yolo/requirements-pick.txt
 ```
 
-`tkinter`가 없으면 C 노트북의 `python3-tk` 설치가 필요하다. `best.pt`가 없으면 현재 A/B에서 사용한 모델을 별도로 전달한다. 모델에 C 바구니 위쪽 시점이 통하는지는 `detect`로 확인한다.
+`tkinter`가 없으면 C 노트북의 `python3-tk` 설치가 필요하다. 현재 모델은 C 전용 4품목 `best_original.pt`다. A/B 모델로 교체하지 않으며 실제 모델 경로는 hardware의 weights를 확인한다.
 
 실제 장치 경로 입력 후 C 설정을 최초 한 번 생성한다:
 
@@ -153,7 +155,8 @@ c region --robot P2
 c detect --robot P2
 ```
 
-노란 선이 실제 집기 영역이다. 좌우 수령 바구니의 상품은 선택 대상이 아니다. `detect`는 전체 검출을 보여주며 팔은 움직이지 않는다. Q 종료.
+노란 선이 실제 집기 영역이다. `detect`는 이 ROI를 잘라 추론하고 원본 좌표로 복원한 검출만 보여주며 팔은 움직이지 않는다. 기본 confidence 0.30 이상인 박스가 초록색으로 표시된다. 실제 적용값은 시작 로그에 나온다. Q 종료.
+`preview`와 `adjust --class`는 보간 기록을 다른 품목에 섞지 않도록 지정 클래스 필터를 유지한다.
 
 그리퍼를 실제 상품 접촉 높이에 맞춘 뒤 높이를 읽어 저장한다. 사용할 상품마다 실행하며, 예:
 
@@ -191,32 +194,55 @@ c fit-spatial --robot P1 --class rice_chip
 - 기본 캘리 좌표·고정 XY 오프셋과 직접 맞춘 최종 XYZ를 기록해 기존 보간을 중복 가산하지 않는다.
 - 범위 밖은 가장 가까운 경계 보정값을 사용한다. 그 구간의 실제 정확도는 별도 확인 대상이다.
 
+## C 상단 카메라 학습 사진 수집
+
+기존 검출 창을 Q로 종료한 뒤 아래를 실행한다. YOLO 추론이나 모터 연결 없이 카메라만 사용한다.
+
+```bash
+cd /home/team2/robot_shopping/kernel-robot-repo-3 && \
+env -u PYTHONPATH -u PYTHONHOME \
+./runtime/field/c-yolo-venv/bin/python -B -m robots.omx_yolo_unload.capture_dataset
+```
+
+- Enter: 현재 원본 1920×1080 사진 저장. 미리보기의 ROI·안내 글씨는 사진에 포함하지 않는다.
+- 1 라이스칩 / 2 신라면 / 3 진라면 / 4 새우깡 / 5 치토스 / 6 서울우유.
+- 8 혼합 배치 / 0 빈 바구니 / V 학습(train)·검증(val) 전환 / Q 또는 Esc 종료.
+- 미리보기 창에 초점을 두고 키를 누른다. 터미널 Enter도 저장한다. 터미널에서는 숫자 또는 V 입력 후 Enter로 전환한다.
+- 첫 수집 제안: 최종 선택한 4품목 각각 train 60장 + val 20장, 혼합 train 45장 + val 15장, 빈 바구니 train 15장 + val 5장. 총 400장으로 시작하며 성능을 보장하는 수량은 아니다.
+- 위치·각도를 바꾼 후 손을 빼고 저장한다. 검증 사진은 학습 사진과 같은 배치를 연속 촬영하지 말고 새로 배치한다. 실제 집을 때의 배치·높이·조명·일부 겹침을 포함한다.
+- 저장 위치: `runtime/field/c-yolo/dataset_capture/날짜-시간-세션/images/train또는val/품목/`. 실행마다 새 세션을 만들고 기존 사진은 보존한다. `captures.jsonl`에 사진별 기록, `summary.json`에 장수가 남는다.
+- 폴더명은 촬영 분류 힌트이며 정답 박스 라벨이 아니다. 저장 사진의 상품 박스를 라벨링하고 최종 4품목을 확정한 뒤 학습용 데이터셋을 만든다. 혼합 사진은 모든 대상 상품에 각각 박스를 그린다. 이 도구는 `.pt` 학습을 실행하지 않는다.
+- 원본을 보관하며, 학습 준비 시 기록된 ROI/여백과 실제 추론 입력을 맞출 수 있다. 원본 좌표에서 만든 박스를 잘라낸 영상에 그대로 사용하지 않는다.
+- 새 4품목 모델 연결 시 기존 실행기의 10품목 라벨 일치 검사도 함께 조정해야 한다. 촬영 도구 추가만으로 새 모델 연결이 완료되지는 않는다.
+
 ## 7. 한 개 → 세 개 하역
 
 아래 `--execute`가 있어야 실물 팔이 동작한다. 생략하면 보낼 명령만 출력한다.
 `--side`는 **주문 고객의 수령 바구니**다. P1/P2 번호로 다시 결정하지 않는다.
 
 ```bash
-c run --robot P1 --side left --skus SKU-RICE-CHIP --execute
-c run --robot P1 --side right --skus SKU-RICE-CHIP --execute
+c run --robot P1 --side left --selection all --max-picks 1 --execute
 ```
 
-한 개 성공 후 3개:
-
 ```bash
-c run --robot P1 --side left \
-  --skus SKU-RICE-CHIP SKU-RICE-CHIP SKU-RICE-CHIP --execute
+c run --robot P1 --side right --selection all --max-picks 1 --execute
 ```
 
-출력의 `job-id`와 `result_file`을 보관한다. 중간 실패 후 **동일 상품 목록·동일 좌우·동일 job-id**로 실행하면 기록상 완료된 동작은 제외한다:
+한 개 실물 성공 후 여러 개를 놓고 ROI 하역 (기본 상한 12궤적):
 
 ```bash
-c run --robot P1 --side left \
-  --skus SKU-RICE-CHIP SKU-RICE-CHIP SKU-RICE-CHIP \
+c run --robot P1 --side left --selection all --execute
+```
+
+출력의 `job-id`와 `result_file`을 보관한다. all 모드는 주문 SKU를 골라내지 않으며, 매 궤적 뒤 새 영상에서 남은 검출을 선택한다. 같은 ID 재실행도 현재 영상을 다시 확인한다:
+
+```bash
+c run --robot P1 --side left --selection all \
   --job-id 앞서출력된ID --execute
 ```
 
-동작이 끝났지만 실제로 놓지 못한 상품은 자동 성공 판정하지 않는다. 물품 배치·남은 개수를 확인하고 해당 물품만 새 시험으로 실행한다.
+연속 3회 미검출은 `no_detections_rechecked`, 궤적 상한 도달은 `pick_limit_reached`다. 둘 다 운영자가 남은 물체와 수령 바구니를 확인해야 한다. `attempted_items`는 완료된 궤적 기록이며 실물 성공이나 주문 SKU 완료가 아니다. 모델이 못 보는 물체까지 빈 바구니로 판정하지 않는다.
+기존 SKU 지정 방식은 `--selection ordered --skus SKU-RICE-CHIP ...`로 사용한다. 이 모드만 같은 ID 재실행 시 완료된 주문 항목을 제외한다.
 Ctrl+C는 취소를 전달하며 팔은 현재 위치 유지 처리를 한다. 완료 기록은 `runs/`의 JSON에 남는다.
 
 ## 8. 관제 연결 — 단독 실물 성공 후

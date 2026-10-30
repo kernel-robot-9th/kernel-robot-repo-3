@@ -1,11 +1,13 @@
 # C 구역 OMX YOLO 하역 계획
 
-갱신: **2026-10-30** · **코드·현장 명령 준비 / C 배포·캘리·실물 시험 미실시**
+관제 연결 최신 상태·확인 후 복귀 절차: [CONTROL_HANDOFF_STATUS.md](CONTROL_HANDOFF_STATUS.md).
+
+갱신: **2026-10-30** · **C 현장 캘리·단독 하역 성공 보고 / 관제 연결 완료 / 전체 주문 실물 시험 대기**
 
 ## 요약
 
 - **최우선 목표:** Pinky 바구니의 상품을 C에서 꺼내 수령 바구니에 놓고, 관제 주문 완료·대기 복귀까지 연결해 전체 시연 영상을 확보한다.
-- **방향:** 사용자 보고로 기존 하역 진행이 실패하여, A/B에서 사용한 YOLO 좌표 집기 방식을 재사용하는 방안으로 전환한다. C에서의 성공 여부는 아직 검증하지 않았다.
+- **방향:** 사용자 보고로 기존 하역 진행이 실패하여, A/B에서 사용한 YOLO 좌표 집기 방식을 재사용하는 방안으로 전환한다. C 단독 하역 성공을 사용자에게 확인받았다. 추가 보간 후 전체 품목·좌우·P1/P2 조합은 아직 미검증이다.
 - **순서:** C 현장 확인 → 상품 1개 하역 → 3슬롯 하역 → P1/P2 연결 → 주문 1건·상품 6개 전체 시연·촬영.
 - **관리 위치:** 이 폴더는 C YOLO 하역 전용 계획·인계·실행 연결을 관리한다. 공통 집기 코드는 `robots/omx_yolo`를 재사용하며 전체 복사본을 새로 만들지 않는다.
 - **후속:** 시연·촬영을 확보한 뒤 [Three.js 트윈](../pinky/WEB_DIGITAL_TWIN_PLAN.md)과 [ACS](../pinky/ACS_NAVIGATION_PLAN.md)를 진행한다.
@@ -16,17 +18,41 @@ C Codex 인계: [C_CODEX_HANDOFF.md](C_CODEX_HANDOFF.md). 준비 브랜치: `cod
 
 전체 목록: [관제 시연 체크리스트](../pinky/CAMERA_NAV_DEMO_PLAN.md).
 
+## C 현장 변경 — ROI 전체 하역
+
+- C 검출은 지정 ROI의 바운딩 사각형에 주변 64px 여백을 더해 잘라 추론하고, 박스 좌표를 원본 영상으로 복원한다. 여백은 포장 일부가 잘리는 현상을 줄이기 위한 것이며, 다각형 밖 집기점은 제외한다. 기본 confidence는 0.30, imgsz는 640이며 캘리 파일은 바꾸지 않는다.
+- 새 설정의 `yolo_unload.selection_mode=all`은 주문 SKU와 비교하지 않고 ROI에서 검출한 상품을 하나씩 집는다. 매 궤적 후 새 영상으로 다시 검출하며, 수령 방향은 명령의 `basket_side`를 따른다. 모델에 학습되지 않았거나 검출되지 않은 물체까지 집는 기능은 아니다.
+- 검출 라벨은 상품별 Z·XY·보간 프로필을 선택하는 데 계속 필요하다. 라면 2종과 나머지 8종에 각각 대표 측정값을 적용하더라도 품목별 저장 구조를 유지한다. `preview`/`adjust --class`는 측정 품목을 정확히 선택하도록 기존 클래스 필터를 유지한다.
+- 연속 3회 미검출은 `no_detections_rechecked`로 멈춘다. 기본 실행당 최대 12궤적(`--max-picks`로 조정), 상한 도달은 `pick_limit_reached`다. 둘 다 실물 완료를 뜻하지 않는다.
+- all 모드 결과의 `attempted_items`는 완료된 궤적 시도 기록이다. 주문 상품 완료인 `executed_items`는 비워 두며, `physical_delivery_confirmed=false`, `operator_review_required=true`를 유지한다. 같은 작업 ID를 재실행하면 현재 영상을 다시 확인한다.
+- 기존 설정에서 selection_mode가 없으면 `ordered` 동작을 유지한다. `--selection ordered --skus ...`로 명시할 수도 있다. A/B의 주문 SKU 선택과 모터 실행 순서는 유지한다.
+- 현재 현장은 같은 높이의 바구니 3개를 연결한 평면과 넓은 공통 P1/P2 ROI를 사용한다. 아래 최초 준비 체크리스트의 한 바구니 ROI 설명보다 이 현장 결정을 우선한다. Pinky 쪽 ID15 180도 전환은 아직 구현되지 않았다.
+
+관제 연결 담당자는 all 모드 결과를 주문 상품 완료로 자동 변환하지 않도록 확인해야 한다. 이번 변경은 관제 설정 적용·worker 재시작을 포함하지 않는다.
+
+## C 4품목 모델 학습
+
+품목 순서는 `shin_ramen`, `jin_ramen`, `rice_chip`, `cheetos`다. `train_pair.py`는 Labelme 다각형/사각형을 검출 박스로 변환하고, 실제 C 검출과 같은 ROI+여백을 잘라 좌표를 변환한다. 원본과 라벨 JSON은 보존한다. 미라벨 사진은 자동으로 배경 취급하지 않으며, 직접 확인한 번호만 `--empty-indices`로 포함한다.
+
+학습 자료와 결과는 `runtime/field/c-yolo/training_4class_20261030/`에 둔다. `dataset-manifest.json`에 원본 해시, 클래스 순서, ROI, 제외 사진, 학습/검증 분할을 기록한다. 가까운 연속 촬영과 유사한 ROI 영상은 같은 그룹으로 분할한다. 검증 자료는 같은 촬영 세션의 일부이므로 독립적인 현장 성능을 뜻하지 않는다.
+
+두 모델 모두 같은 기존 가중치와 160장/40장 분할을 사용한다. `original`은 증강 없이, `augmented`는 밝기·색상·회전·이동·크기 및 약한 모자이크 증강으로 학습한다. 증강은 학습 중 적용하며 검증 사진에는 적용하지 않는다. `training-settings.json`에 실제 설정, `training-status.json`에 현재 단계와 완료 모델을 기록한다.
+
+완료 모델은 `prepared_models/best_original.pt`, `prepared_models/best_augmented.pt`이며 각각 `gateway-c.original.hardware.json`, `gateway-c.augmented.hardware.json`으로 검출을 실행한다. 이 두 설정은 `model_classes`로 4품목 순서를 명시한다. 기존 기본 하드웨어 설정의 모델 경로는 자동 변경하지 않는다. A/B는 기존 10품목 검사를 유지한다.
+
+학습 전용 Python은 `runtime/field/c-yolo-train-venv/bin/python`이다. CUDA PyTorch 패키지를 기존 `/home/team2/venv/il`에서 읽어 재사용하며, 추가 설치는 학습 환경에만 한다. 기존 ACT 환경과 C 실행 가상환경에는 설치하지 않는다.
+
 ## 최소 동작 흐름
 
 ```text
 C 정밀주차 완료
-→ 관제의 해당 로봇 적재 목록·슬롯 확인
-→ 바구니 영역에서 해당 상품 YOLO 검출
+→ 명령의 로봇·수령 바구니 방향 확인
+→ 바구니 ROI에서 상품 YOLO 검출 (all 모드: 주문 SKU 필터 없음)
 → C 전용 캘리로 집기 XY 계산 + 상품별 집기 높이 적용
 → 접근 → 집기 → 들어 올리기
 → 수령 바구니 접근 → 놓기 → 그리퍼 개방 → 복귀
-→ 항목별 결과 보고 → 다음 상품
-→ 하역 결과 인계 → 주문 완료·대기 복귀
+→ 궤적 시도 기록 → 새 영상의 다음 상품
+→ 연속 미검출 또는 상한 도달 → 운영자 실물 확인·관제 인계
 ```
 
 위 흐름의 C YOLO 실행기를 준비했다. 기존 관제 `HANDOFF`를 사용하며 `unload_engine=yolo` 설정으로 선택한다. 현장 설정 연결·실물 시험은 남아 있다.
