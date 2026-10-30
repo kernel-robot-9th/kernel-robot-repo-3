@@ -19,6 +19,7 @@ from geometry_msgs.msg import Point
 from tf2_ros import Buffer, TransformListener
 from sensor_msgs.msg import JointState, Image
 from PIL import Image as PILImage, ImageDraw, ImageFont
+GT_POS = (0.35, 0.45, 0.75)   # 10-27 GRASP ANGLES 표 자리 (3D 화면 왼쪽 위 빈 곳)
 import numpy as np
 
 # RH-P12-RN(A) 공식 메시(ROBOTIS-GIT/RH-P12-RN-A, Apache-2.0)를 플랜지(link_6)에 붙여 그린다. 관절 위치는 공식 xacro 값.
@@ -81,7 +82,7 @@ class Twin(Node):
         # 지금 다루지 않는 물건들의 마지막 자리. 10-23: 켤 때 기본 자리(PARK)에 놓지 않는다(새우깡만 있는데 초코송이가 보임) -> 카메라로 본 것만 그림
         self.parked = {o: None for o in PARK}
         self.obj = "choco"; self.pos = None; self.held = False; self.in_basket = False
-        self.status = "IDLE"; self.alert = None; self.alert_t = 0.0; self.history = []; self.causes = []; self.miss = {}; self.seen_once = set(); self.extra = {}; self.yaw = {}; self.tilt = None; self.stand = {}; self.anim = None
+        self.status = "IDLE"; self.alert = None; self.alert_t = 0.0; self.history = []; self.causes = []; self.miss = {}; self.seen_once = set(); self.extra = {}; self.yaw = {}; self.tilt = None; self.stand = {}; self.anim = None; self.tries = []
         self.create_timer(0.1, self.draw)
 
     # ---- 이벤트 ----
@@ -98,6 +99,7 @@ class Twin(Node):
             self.parked = {o: None for o in PARK}; self.pos = None   # 10-23: 기본 자리 대신 비워 두고 카메라 동기화로 채움
             self.held = False; self.in_basket = False; self.status = "IDLE"; self.alert = None; self.causes = []; self.history = []
         elif k == "located":
+            if self.obj == "drink" and e.get("object") == "drink": self.tries = []   # 새 게토레이 집기 시작
             x, y = [v / 1000.0 for v in e["xy"]]; self.pos = [x, y, TABLE["z"]]; self.held = False; self.in_basket = False
             self.status = f"{name} located x{e['xy'][0]:.0f} y{e['xy'][1]:.0f}"; self.alert = None; self.causes = []
             if "yaw" in e: self.yaw[self.obj] = float(e["yaw"]); self.tilt = None
@@ -162,6 +164,9 @@ class Twin(Node):
         elif k == "tilt":   # 10-26 게토레이: 들고 잰 병 기울기 (deg, 뚜껑 쪽 아래 +). -999 = 팔에 가려 모름
             d_ = float(e.get("deg", -999)); self.tilt = None if d_ < -900 else d_
             self.status = f"{name} held, tilt " + (f"{self.tilt:+.0f} deg" if self.tilt is not None else "unknown (label hidden by arm)") + f", gripper {e.get('grip', 0):.0f}"
+        elif k == "grasp_try":   # 10-27 게토레이 잡기 시도마다 손목 각도·기울기·결과 (3D 화면 왼쪽 위 빈 곳에 표)
+            self.tries.append(dict(k=int(e.get("k", len(self.tries) + 1)), wrist=float(e.get("wrist", 0)), tilt=float(e.get("tilt", -999)), res=str(e.get("result", "")), shift=float(e.get("shift", 0))))
+            self.tries = self.tries[-6:]
         elif k == "tilt_warn":   # 10-26 게토레이: 운반 중 그리퍼 값이 줄어듦 = 병이 손가락에서 돎
             d_ = float(e.get("deg", -999)); self.tilt = None if d_ < -900 else d_
             ang = f"{self.tilt:+.0f} deg" if self.tilt is not None else "unknown"
@@ -234,6 +239,13 @@ class Twin(Node):
         if self.obj == "drink" and self.tilt is not None:   # 10-26: 게토레이 기울어진 각도
             lines.append(("", self.f_small, (0, 0, 0), 10)); lines.append(("BOTTLE TILT", self.f_big, (255, 170, 80), 46))
             lines.append((f"{self.tilt:+.1f} deg ({'cap side down' if self.tilt > 0 else 'bottom side down'})", self.f_small, (240, 240, 240), 38))
+        if self.obj == "drink" and self.tries:   # 10-27 게토레이 잡기 시도마다 손목 각도·병 기울기·결과
+            RES = {"ok": ("HOLD OK", (120, 230, 140)), "regrip": ("REGRIP", (255, 210, 80)), "fail": ("FAILED", (255, 110, 100)), "slip": ("SLIPPED", (255, 110, 100))}
+            lines.append(("", self.f_small, (0, 0, 0), 10)); lines.append(("GRASP ANGLES", self.f_big, (120, 220, 255), 46))
+            for r_ in self.tries:
+                lab, col = RES.get(r_["res"], (r_["res"], (240, 240, 240)))
+                tl = f"tilt {r_['tilt']:+.0f}" if r_["tilt"] > -900 else "tilt ?"
+                lines.append((f"#{r_['k']} wrist {r_['wrist']:+.0f}  {tl}  {lab}" + (f" {r_['shift']:+.0f}mm" if r_["res"] == "regrip" else ""), self.f_small, col, 38))
         lines.append(("", self.f_small, (0, 0, 0), 14)); lines.append((f"gripper {self.grip:.0f} (0 closed, 750 open)", self.f_small, (150, 150, 160), 38))
         H = 16 + sum(l[3] for l in lines); im = PILImage.new("RGB", (W, H), (30, 30, 34)); d = ImageDraw.Draw(im)
         d.rectangle([0, 0, W, head_h], fill=(170, 25, 25) if self.bad else (35, 110, 60))
@@ -354,6 +366,8 @@ class Twin(Node):
             arr.markers.append(self.text(31, 0.45, -0.15, 0.72, self.alert, (1.0, 0.15, 0.15, 1.0), 0.06))
         else:   # 빈 글자(" ") TEXT 마커는 rviz2 를 죽인다(Ogre Vertex Buffer out of memory) -> 지운다
             d = self.mk(31, Marker.TEXT_VIEW_FACING); d.action = Marker.DELETE; arr.markers.append(d)
+        if True:
+            d = self.mk(33, Marker.TEXT_VIEW_FACING); d.action = Marker.DELETE; arr.markers.append(d)
         for mid in (30, 32):
             d = self.mk(mid, Marker.TEXT_VIEW_FACING); d.action = Marker.DELETE; arr.markers.append(d)
         if False:
