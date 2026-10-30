@@ -7,14 +7,19 @@ from pathlib import Path
 import cv2, numpy as np, rclpy
 HERE = Path(__file__).resolve().parent; sys.path.insert(0, str(HERE))
 import depth_tilt as D
-from gatorade_vision import find_bottle, px_to_xy
+from gatorade_vision import find_bottle, px_to_xy, liquid_mask
 import random_area_check as RA
 from path_check import ik
 
 DRY = "--dry" in sys.argv
 L_BOTTLE, CAP_TIP = 320.0, 15.0           # 병 길이(뚜껑 포함), 뚜껑 중심 -> 뚜껑 끝
-COM_GUESS = 160.0                         # 뚜껑 중심에서 무게 중심 첫 추정 (10-26 시험 144~181)
-ZG, LIFT, CUR = 145.0, 20.0, 250   # 10-26: 200 -> 250 (운반 높이로 올리다 빠짐)
+COM_GUESS = 160.0                         # 첫 잡기: 뚜껑 중심에서 (10-26 시험 무게 중심 144~181). 뽁뽁이가 있으면 깊이로 찾은 끝 + 30mm 부터
+# 10-26 18:40 새 병: 뚜껑 쪽 0~17cm 를 뽁뽁이로 감쌈(밀 때 탕탕 소리, 투명 깊이 문제) -> 감싼 곳은 지름 12~13cm 라 그리퍼(약 106mm)에 안 들어감.
+# 사용자: 헤드 말고 바디(초록 음료 쪽)를 잡을 것 -> 뚜껑에서 195mm 보다 뚜껑 쪽으로는 옮기지 않는다
+GRIP_MIN_FROM_CAP = 0.0   # 뽁뽁이 없으면 제한 없음
+LABEL_RANGE = (60.0, 150.0)   # 누운 병 라벨 높이 (뽁뽁이면 108~165)
+TILT_OK = 5.0   # 10-27 사용자: 비전으로 잰 기울기(뚜껑 vs 바닥 끝)가 이 안일 때만 성공, 아니면 내려놓고 다시 잡기
+ZG, LIFT, CUR = 145.0, 20.0, 250   # 뽁뽁이 병은 320 (아래). 10-26: 200 -> 250 (운반 높이로 올리다 빠짐). 19:05 250 -> 320: 뽁뽁이 피해 무게 중심에서 3~4cm 바디 쪽을 잡아 병이 손가락에서 돎
 ORI = [178.902, -180.0, 178.902]
 BASKET_Y = (-675.0, -325.0)               # 바구니 안쪽 y 범위 (90도 돌려 놓은 뒤, 긴 변 36cm, 여유 5mm)
 MAN = 0.022
@@ -61,6 +66,12 @@ def axis_dir_ray(img, cap_px):
         cu = find_cup(img, start_pose=False)
         if cu is not None and np.hypot(cu[0] - cx, cu[1] - cy) > 60: cv2.circle(m, (int(cu[0]), int(cu[1])), 60, 0.0, -1)
     except Exception as ex: print("     (다른 상품 지우기 실패)", ex, flush=True)
+    # 10-26 18:00: 비킨 자리에서 찍으면 빈 작업대 사진(팔은 시작 자세)과 달리 시작 자세 그리퍼 자리가 달라진 픽셀로 남아
+    # 축 평균이 그쪽으로 끌리고 길이가 205px 로 늘어 멈춤 -> 뚜껑과 이어진 덩어리만 쓴다
+    _mc = cv2.morphologyEx((m > 0).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    _n, _lab = cv2.connectedComponents(_mc)
+    _l0 = _lab[max(0, int(cy) - 6):int(cy) + 7, max(0, int(cx) - 6):int(cx) + 7]; _v = _l0[_l0 > 0]
+    if _v.size: m = m * (_lab == np.bincount(_v).argmax()).astype(np.float32)
     H_, W_ = m.shape; best = None
     ts = np.arange(25, 160, 3.0); ws = np.arange(-12, 13, 3.0)
     for deg in range(0, 360, 2):
@@ -92,6 +103,38 @@ def axis_dir_ray(img, cap_px):
     a = np.array(px_to_xy([cx, cy])); b = np.array(px_to_xy([cx + 60 * ux, cy + 60 * uy]))
     u = (b - a) / np.linalg.norm(b - a); d = 1 if u[1] > 0 else -1
     return u, d, math.degrees(math.atan2(u[0], abs(u[1])))
+
+def axis_dir_depth(cap_xy):
+    """10-26 19:00: 뚜껑 바로 뒤를 흰 뽁뽁이로 감싸 흰 작업대와 색이 같음 -> 사진 띠 방식이 25px 에서 끊김.
+    깊이(작업대 위 높이 40mm 넘는 곳)로 뚜껑과 이어진 덩어리를 찾아 주성분 = 병 축. 길이 250~380mm, 폭 60~150mm 가 아니면 None (추측 안 함)"""
+    KD = np.array([[432.6386, 0, 425.2579], [0, 432.6386, 241.8740], [0, 0, 1.0]])
+    RDC = np.array([[0.999997, 0.000521573, 0.00237656], [-0.000531042, 0.999992, 0.00398554], [-0.00237446, -0.00398679, 0.999989]])
+    TDC = np.array([-58.9858, 0.2221, 0.2853])
+    PC = json.loads((HERE / "cam_pose.json").read_text()); RC, _ = cv2.Rodrigues(np.array(PC["rvec"])); TC = np.array(PC["tvec"])
+    Hm = D.heights(D.grab_depth())
+    xs, ys = np.arange(285.0, 701.0, 5.0), np.arange(-235.0, 236.0, 5.0); GX, GY = np.meshgrid(xs, ys)
+    W = np.c_[GX.ravel(), GY.ravel(), np.zeros(GX.size)]
+    pc = W @ RC.T + TC; pd = (pc - TDC) @ RDC; uv = pd @ KD.T; u = np.round(uv[:, 0] / uv[:, 2]).astype(int); v = np.round(uv[:, 1] / uv[:, 2]).astype(int)
+    ok = (u >= 0) & (u < Hm.shape[1]) & (v >= 0) & (v < Hm.shape[0]); hv = np.full(W.shape[0], np.nan); hv[ok] = Hm[v[ok], u[ok]]
+    hv = hv.reshape(GX.shape); m = (np.nan_to_num(hv) > 40.0).astype(np.uint8)
+    m &= (np.hypot(GX - cap_xy[0], GY - cap_xy[1]) < 380.0).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    n, lab = cv2.connectedComponents(m)
+    if n <= 1: print("     깊이로 병 덩어리 못 찾음", flush=True); return None
+    d2 = np.hypot(GX - cap_xy[0], GY - cap_xy[1]); best = None
+    for j in range(1, n):
+        dj = d2[lab == j].min()
+        if best is None or dj < best[0]: best = (dj, j)
+    if best[0] > 40.0: print(f"     깊이 덩어리가 뚜껑에서 {best[0]:.0f}mm 떨어짐", flush=True); return None
+    P = np.c_[GX[lab == best[1]], GY[lab == best[1]]]; c = P.mean(0)
+    w_, V = np.linalg.eigh(np.cov((P - c).T)); ax = V[:, -1]
+    if np.dot(c - np.array(cap_xy[:2]), ax) < 0: ax = -ax                      # 뚜껑 -> 몸통
+    t = (P - c) @ ax; wdt = (P - c) @ np.array([-ax[1], ax[0]])
+    L, Wd = float(t.max() - t.min()), float(np.percentile(wdt, 95) - np.percentile(wdt, 5))
+    print(f"     깊이로 병 축: 길이 {L:.0f}mm 폭 {Wd:.0f}mm", flush=True)
+    if not (250.0 <= L <= 380.0 and 60.0 <= Wd <= 150.0): print("     깊이 덩어리가 병 모양과 안 맞음 -> 추측하지 않고 멈춤", flush=True); return None
+    u_ = ax / np.linalg.norm(ax); d = 1 if u_[1] > 0 else -1
+    return u_, d, math.degrees(math.atan2(u_[0], abs(u_[1])))
 
 def axis_dir_bg(img, cap_px):
     """10-26: 빈 작업대 사진(table_empty.jpg, 팔은 시작 자세)과 비교해 병 영역을 찾고 주성분으로 병 축 방향(픽셀) -> (단위벡터 작업대 좌표, 몸통 방향 d, 각도)"""
@@ -166,6 +209,8 @@ def emit(event, **kw):
     m = _Str(); d = {"event": event, "object": "drink", "t": time.time()}
     d.update({k: ([round(float(x), 1) for x in v] if hasattr(v, "__len__") and not isinstance(v, str) else (v if isinstance(v, str) else round(float(v), 2))) for k, v in kw.items()})
     m.data = json.dumps(d, ensure_ascii=False); _ev.publish(m); rclpy.spin_once(node, timeout_sec=0.05)
+def gtry(k_, res, tilt_=None, shift_=0.0):   # 10-27 트윈 "GRASP ANGLES" 표
+    emit("grasp_try", k=float(k_), wrist=float(-ALPHA), tilt=(float(tilt_) if tilt_ is not None else -999.0), result=res, shift=float(shift_))
 def fail(reason):
     emit("loop_end", reason=reason); print("!!! 멈춤:", reason, flush=True); time.sleep(0.5); raise SystemExit(reason)
 emit("retry", attempt=1, tries=1)
@@ -188,6 +233,8 @@ if abs(cap_xy[1] + d * COM_GUESS) > 200.0 and abs(cap_xy[1] - d * COM_GUESS) <= 
     print(f"     몸통 쪽으로 보면 잡을 자리가 작업대 밖 -> 반대쪽이 몸통", flush=True); d = -d   # 병 길이 32cm, 작업대 폭 40cm
 cap_dir = -d                                                             # 뚜껑 방향
 bgr = axis_dir_ray(img, r["cap_px"])   # 10-26: 띠 방식만. 못 믿으면 예비 방법(윤곽선)으로 추측하지 않고 멈춤 (추측으로 병을 누름)
+if bgr is None:   # 10-26 19:00: 사진으로 못 재면 깊이로 (흰 뽁뽁이). 둘 다 검증 통과해야 함
+    bgr = axis_dir_depth(px_to_xy(r["cap_px"]))
 if bgr is None: fail("병 방향을 확실히 못 잼. 병을 작업대에 다시 놓아 주세요")
 U, d2, ang = bgr
 d = d2; cap_dir = -d
@@ -238,7 +285,7 @@ if _g < 700: G.gripper_cmd(750, 200); G.gripper_wait(timeout=12.0)
 
 def label_window(h):
     """누운 병 라벨(높이 60~150mm 덩어리) 중심. 10-26: 컵라면(110)·초코송이(85)도 이 높이 -> 덩어리가 여럿이면 모름(None, 그리퍼 값으로만 판단)"""
-    x0, x1, y0, y1 = D.ROI; m = np.zeros(h.shape, np.uint8); sub = h[y0:y1, x0:x1]; m[y0:y1, x0:x1] = ((sub > 60) & (sub < 150)).astype(np.uint8)
+    x0, x1, y0, y1 = D.ROI; m = np.zeros(h.shape, np.uint8); sub = h[y0:y1, x0:x1]; m[y0:y1, x0:x1] = ((sub > LABEL_RANGE[0]) & (sub < LABEL_RANGE[1])).astype(np.uint8)   # 10-26 18:40: 뽁뽁이 감싼 뚜껑 쪽(110~140mm)만
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     n, lab, st, cen = cv2.connectedComponentsWithStats(m)
     big = [j for j in range(1, n) if st[j, 4] > 300]
@@ -254,6 +301,35 @@ _KD = np.array([[432.6386, 0, 425.2579], [0, 432.6386, 241.8740], [0, 0, 1.0]]) 
 _RDC = np.array([[0.999997, 0.000521573, 0.00237656], [-0.000531042, 0.999992, 0.00398554], [-0.00237446, -0.00398679, 0.999989]])
 _TDC = np.array([-58.9858, 0.2221, 0.2853])                                              # 깊이 -> 컬러 (mm)
 _PC = json.loads((HERE / "cam_pose.json").read_text()); _RC, _ = cv2.Rodrigues(np.array(_PC["rvec"])); _TC = np.array(_PC["tvec"])
+
+_KC = np.array(_PC["K"]); _DC = np.array(_PC["dist"]); _CAMC = -_RC.T @ _TC; _RV = cv2.Rodrigues(_RC)[0]
+def vis_tilt(im):
+    """10-27 비전 기울기: 컬러 사진에서 뚜껑(빨강)과 바닥 끝(병 축 따라 가장 먼 노란 음료)을 찾아 병 축이 지나는 세로 평면에 투영 ->
+    두 끝의 높이 차로 기울기(도, +: 뚜껑 쪽이 낮음). 깊이는 투명한 바닥 쪽을 못 봐서 컬러로. 못 재면 None"""
+    if im is None: return None
+    rr = find_bottle(im)
+    if rr is None: return None
+    n = np.array([-U[1], U[0], 0.0]); P0 = np.array([cap_xy[0], cap_xy[1], 0.0])
+    def to_plane(px):
+        u = cv2.undistortPoints(np.array([[px]], np.float64), _KC, _DC).ravel(); d = _RC.T @ np.array([u[0], u[1], 1.0])
+        den = float(n @ d)
+        return None if abs(den) < 1e-6 else _CAMC + (float(n @ (P0 - _CAMC)) / den) * d
+    ends, _ = cv2.projectPoints(np.array([[cap_xy[0], cap_xy[1], 47.0], [cap_xy[0] + U[0] * 330, cap_xy[1] + U[1] * 330, 47.0]]), _RV, _TC, _KC, _DC)
+    v_ = ends[1, 0] - ends[0, 0]; L_ = float(np.linalg.norm(v_)); v_ = v_ / L_
+    ys, xs = np.nonzero(liquid_mask(im)); cp = np.array(rr["cap_px"])
+    rel = np.c_[xs - cp[0], ys - cp[1]].astype(np.float64); t_ = rel @ v_; dp = np.abs(rel @ np.array([-v_[1], v_[0]]))
+    sel = (t_ > 20) & (t_ < 1.4 * L_) & (dp < 40)
+    if sel.sum() < 150: return None
+    tb = np.percentile(t_[sel], 98); far = sel & (t_ >= tb)
+    pc = to_plane(cp); pb = to_plane(np.array([xs[far].mean(), ys[far].mean()]))
+    if pc is None or pb is None: return None
+    s_c, s_b = float(np.dot(pc[:2] - P0[:2], U)), float(np.dot(pb[:2] - P0[:2], U))
+    if s_b - s_c < 120.0: return None
+    return math.degrees(math.atan2(pb[2] - pc[2], s_b - s_c)), float(pc[2]), float(pb[2])
+def vis_rel(tag):
+    v = vis_tilt(snap())
+    if v is None or VT0 is None: print(f"     비전 기울기({tag}): 못 잼", flush=True); return None
+    print(f"     비전 기울기({tag}): {v[0] - VT0:+.1f}도 (뚜껑 높이 {v[1]:.0f}, 바닥 끝 {v[2]:.0f}mm)", flush=True); return v[0] - VT0
 def depth_px(xw, yw, zw=0.0):
     pc = _RC @ np.array([xw, yw, zw]) + _TC; pd = _RDC.T @ (pc - _TDC); uv = _KD @ (pd / pd[2]); return int(round(uv[0])), int(round(uv[1]))
 def h_at(Hm, xw, yw, r=9):
@@ -261,20 +337,65 @@ def h_at(Hm, xw, yw, r=9):
     return float(np.percentile(vv, 80)) if vv.size > 15 else float("nan")
 def fingers_clear(xg_, yg_):
     """손가락 두 개가 내려갈 자리(병 축과 직각으로 +-55mm)는 비어 있고(< 40mm), 가운데에는 병이 있어야(> 40mm) 함"""
-    n_ = np.array([-U[1], U[0]]); c_ = h_at(HMAP, xg_, yg_)
+    n_ = np.array([-U[1], U[0]])
+    # 10-26 18:20: 투명 몸통은 깊이가 0~30mm 로 들쭉날쭉(가운데 5mm 로 읽혀 멈춤, 병은 있었음) -> 잡을 자리 앞뒤 축 위(-100~+80mm, 라벨 포함) 최고 높이로 병 있음 판단
+    _hs = [h_at(HMAP, xg_ + U[0] * s_, yg_ + U[1] * s_) for s_ in range(-100, 81, 20)]; _hs = [v for v in _hs if np.isfinite(v)]
+    c_ = max(_hs) if _hs else float("nan")
     f1 = h_at(HMAP, xg_ + n_[0] * 55, yg_ + n_[1] * 55); f2 = h_at(HMAP, xg_ - n_[0] * 55, yg_ - n_[1] * 55)
-    print(f"     깊이 확인: 가운데 {c_:.0f}mm, 손가락 자리 {f1:.0f} / {f2:.0f}mm", flush=True)
+    print(f"     깊이 확인: 병 축 위 최고 {c_:.0f}mm, 손가락 자리 {f1:.0f} / {f2:.0f}mm", flush=True)
     if not (np.isfinite(c_) and np.isfinite(f1) and np.isfinite(f2)): return False, "깊이를 못 읽음"
     if f1 > 40.0 or f2 > 40.0: return False, f"손가락 자리에 무언가 있음 ({f1:.0f}/{f2:.0f}mm) -> 병 위로 내려갈 수 있어 멈춤"
     # 10-26: 라벨 없는 투명 몸통(노란 음료)은 깊이가 20~30mm 로 낮게 읽힘 (라벨 쪽 90mm, 빈 작업대 0~6mm) -> 12mm 넘으면 병 있음
-    if c_ < 12.0: return False, f"잡을 자리에 병이 없음 (높이 {c_:.0f}mm)"
+    if c_ < 40.0: return False, f"잡을 자리 앞뒤 병 축 위에 병이 없음 (최고 높이 {c_:.0f}mm)"   # 라벨(약 90mm)이 이 구간에 들어옴
     return True, ""
 
 # ---- 2. 무게 중심 ----
 mv(430, 13, 427, 40)   # 바구니 쪽에서 출발할 수 있으니 높이 유지한 채 시작 자세로 먼저 (바구니 보호)
 mv(430, 250, 450, 40); time.sleep(0.5); HMAP = D.heights(D.grab_depth()); mv(430, 13, 427, 40)   # 팔을 작업대 밖(비킨 자리)으로 빼고 깊이 지도
+# 10-26 18:45: 뽁뽁이 끝(누운 높이 108mm 넘다가 100mm 밑으로)을 깊이로 찾아 그보다 30mm 바디 쪽부터 잡는다 (사용자: 헤드 말고 바디)
+_wend, _seen = None, False
+for s_ in range(40, 300, 10):
+    v = h_at(HMAP, cap_xy[0] + U[0] * s_, cap_xy[1] + U[1] * s_)
+    if not np.isfinite(v): continue
+    if v > 108.0: _seen = True
+    elif _seen and v < 100.0: _wend = s_; break
+if _wend is not None:
+    GRIP_MIN_FROM_CAP = float(_wend + 30); LABEL_RANGE = (108.0, 165.0); CUR = 320   # 뽁뽁이 병: 감싼 곳이 라벨 대신, 무게 중심에서 벗어나 잡으니 힘 더
+    if GRIP_MIN_FROM_CAP > 280.0: fail(f"뽁뽁이가 뚜껑에서 {_wend}mm 까지 감싸 잡을 맨 몸통이 짧음")
+    _s = float(np.dot(np.array([xg, yg]) - np.array(cap_xy[:2]), U))
+    print(f"     뽁뽁이 끝: 뚜껑에서 {_wend}mm -> {GRIP_MIN_FROM_CAP:.0f}mm 부터 잡음 (지금 {_s:.0f}mm)", flush=True)
+    if _s < GRIP_MIN_FROM_CAP:
+        xg += U[0] * (GRIP_MIN_FROM_CAP - _s); yg += U[1] * (GRIP_MIN_FROM_CAP - _s)
+        pts, msg = plan(xg, yg, CAPF); print("     다시 계획:", msg, flush=True)
+        if pts is None: fail(msg)
+else:
+    print("     뽁뽁이 없음 -> 무게 중심 찾기 제한 없음", flush=True)
+# 10-26 18:25: 뚜껑 픽셀 -> 작업대 좌표가 병 중심에서 옆으로 3cm 비껴(x482, 실제 축 약 x452) 손가락이 투명 몸통 위로 갈 뻔함 (가운데 깊이 5mm 로 멈춤)
+# -> 깊이 지도에서 잡을 자리 맨 몸통(높이 약 92mm) 가로 단면의 가운데로 병 축을 옆으로 맞춘다 (최대 +-40mm). 18:50: 뽁뽁이는 폭이 들쭉날쭉해 잡을 자리에서 잼
+_n = np.array([-U[1], U[0]]); _prof = []
+for o_ in range(-100, 101, 5):
+    vv = [h_at(HMAP, xg + U[0] * s_ + _n[0] * o_, yg + U[1] * s_ + _n[1] * o_, r=5) for s_ in (-10, 0, 10, 20)]
+    vv = [v for v in vv if np.isfinite(v)]; _prof.append((o_, max(vv) if vv else 0.0))
+_runs, _cur = [], []   # 50mm 넘는 연속 구간들 -> 0 에 가장 가까운 구간(옆 상품 제외)의 양 끝 가운데
+for o_, v in _prof:
+    if v > 50.0: _cur.append(o_)
+    elif _cur: _runs.append(_cur); _cur = []
+if _cur: _runs.append(_cur)
+_runs = [r_ for r_ in _runs if len(r_) >= 3]
+_hi = min(_runs, key=lambda r_: 0 if r_[0] <= 0 <= r_[-1] else min(abs(r_[0]), abs(r_[-1]))) if _runs else []
+if _hi and 50 <= (_hi[-1] - _hi[0]) <= 150:   # 병 폭 약 95mm, 뽁뽁이 감싼 곳 약 130mm
+    _off = float(np.clip((_hi[0] + _hi[-1]) / 2.0, -40.0, 40.0))
+    print(f"     깊이로 병 축 옆 보정 {_off:+.0f}mm (몸통 단면 {[round(v) for _, v in _prof]})", flush=True)
+    if abs(_off) >= 5.0:
+        xg += _n[0] * _off; yg += _n[1] * _off; cap_xy = [cap_xy[0] + _n[0] * _off, cap_xy[1] + _n[1] * _off]
+        pts, msg = plan(xg, yg, CAPF); print("     다시 계획:", msg, flush=True)
+        if pts is None: fail(msg)
+else:
+    print(f"     라벨 단면을 깊이로 못 찾음 (단면 {[round(v) for _, v in _prof]}) -> 보정 없음", flush=True)
 _ok, _why = fingers_clear(xg, yg)
 if not _ok: fail(_why)
+_vb = vis_tilt(snap()); VT0 = _vb[0] if _vb else None   # 10-27 바닥에 누운 기준 (사진 기울기 0 이 아닐 수 있어 차이로 판단)
+print("비전 기준 기울기: " + (f"{VT0:+.1f}도" if VT0 is not None else "못 잼 -> 깊이 라벨·그리퍼 값으로만 판단"), flush=True)
 h = D.heights(D.grab_depth()); C = label_window(h); H0 = label_h(h, C)   # 10-26: 기준 라벨 높이는 팔이 병 위에 없을 때 (그리퍼가 섞여 70mm 로 틀림)
 print(f"라벨 기준 높이 {H0:.0f}mm (시작 자세에서)", flush=True)
 WORI = list(ORI_G)   # 병 위로 가면서 손목을 병 각도로
@@ -292,37 +413,60 @@ for k in range(1, 7):
         if not _ok: mv(xg, yg, 320, 20); fail(_why)
     mv(xg, yg, 220, 20); mv(xg, yg, ZG, 15)
     G.gripper_cmd(0, CUR); G.gripper_wait(timeout=12.0); time.sleep(1.2); g0 = grip()
-    mv(xg, yg, ZG + LIFT, 10); time.sleep(2.0); g1 = grip()
+    mv(xg, yg, ZG + LIFT, 10); time.sleep(1.0); g1 = grip()   # 10-27 데모: 무게 중심(뚜껑에서 160mm)을 바로 잡으니 확인만 짧게 (2 -> 1초)
     if g0 is None or g1 is None: mv(xg, yg, 320, 20); fail("그리퍼 상태를 못 읽음 (그리퍼 노드 재시작 필요)")
-    if g1 <= 60 or g1 < g0 - 60:
-        print(f"[{k}] !! 빠짐 (그리퍼 {g0}->{g1}) -> 위로만", flush=True); emit("grasp_failed", xyz=[xg, yg, ZG], closed_pos=float(g1 or 0)); mv(xg, yg, 320, 20); fail("잡기 실패 (빈손)")
+    # 10-27 사용자: 무게 중심이 안 맞으면 내려놓고 맞게 다시 잡을 것. 10-26 에 병이 손가락에서 돌며 그리퍼 530->458 로 줄었는데
+    # '빈손'으로 보고 위로 빼서 병을 쥔 채 공중에 멈춤 -> 진짜 빈손(150 이하, 빈손 끝까지 닫힘 29)만 실패, 쥐고 있으면 돈 것으로 보고 다시 잡기
+    turned = g1 > 150 and g1 < g0 - 60
+    if turned: print(f"[{k}] 병이 손가락에서 돎 (그리퍼 {g0:.0f}->{g1:.0f}) -> 쥔 채라 내려놓고 무게 중심 쪽으로 다시 잡음", flush=True)
+    if g1 <= 150:
+        print(f"[{k}] !! 빠짐 (그리퍼 {g0}->{g1}) -> 위로만", flush=True); emit("grasp_failed", xyz=[xg, yg, ZG], closed_pos=float(g1 or 0)); gtry(k, "slip"); mv(xg, yg, 320, 20); fail("잡기 실패 (빈손)")
     H1 = label_h(D.heights(D.grab_depth()), C); occl = bad_label(H1, LIFT); drop = None if occl else (H0 + LIFT) - H1   # +: 라벨(뚜껑 쪽)이 처짐
-    time.sleep(2.0); g2 = grip()   # 10-26 사용자: 완전 수평이 아니어도 그리퍼에 안정적으로 걸리면 됨 -> 2초 더 버티며 도는지 본다
-    stable = g2 is not None and (g1 - g2) < 8.0
+    time.sleep(1.2); g2 = grip()   # 10-27 2 -> 1.2초 (그리퍼 상태 갱신 약 1.7Hz 라 두 번은 읽히게). 10-26 사용자: 완전 수평이 아니어도 그리퍼에 안정적으로 걸리면 됨 -> 2초 더 버티며 도는지 본다
+    stable = g2 is not None and (g1 - g2) < 8.0 and not turned
+    vt = vis_rel("2cm"); vstep = None if vt is None else float(np.clip(1.2 * abs(vt), 5.0, 20.0)) * (1 if vt > 0 else -1)
+    if vt is not None: tilt = vt
     lever = max(60.0, math.hypot(xg - cap_xy[0], yg - cap_xy[1]) - 45.0)   # 잡은 자리 -> 라벨 가운데 (뚜껑에서 약 6cm)
     tilt = None if drop is None else math.degrees(math.atan2(drop, lever))
     emit("tilt", deg=(tilt if tilt is not None else -999.0), grip=float(g2 or 0), occluded=("yes" if drop is None else "no"))
     print(f"[{k}] x{xg:.0f} y{yg:.0f} 그리퍼 {g0:.0f}->{g1:.0f}->{g2:.0f}({'안정' if stable else '도는 중'}) 라벨 {H1:.0f} "
           + ("(팔에 가려 못 믿음 -> 그리퍼 값으로 판단)" if occl else f"(수평 {H0 + LIFT:.0f}) 뚜껑 쪽 처짐 {drop:+.0f}mm"), flush=True)
-    if stable and (occl or abs(drop) < 0.8 * LIFT):   # 10-26 사용자: 완전 수평 말고 그리퍼에 걸리면 됨 -> 끝이 바닥에 안 닿으면 바로 5cm 버티기
-        mv(xg, yg, ZG + 50.0, 6); time.sleep(3.0); g3 = grip()   # 10-26: 2cm 는 버텼는데 30cm 올리다 빠짐 -> 5cm 에서 3초 더
+    if stable and ((abs(vt) <= 7.0) if vt is not None else (occl or abs(drop) < 0.8 * LIFT)):   # 2cm 는 끝이 바닥에 닿기 전 최대 약 7도   # 10-26 사용자: 완전 수평 말고 그리퍼에 걸리면 됨 -> 끝이 바닥에 안 닿으면 바로 5cm 버티기
+        mv(xg, yg, ZG + 50.0, 12); time.sleep(2.0); g3 = grip()   # 10-27: 3 -> 2초, 6 -> 12mm/s. 10-26: 2cm 는 버텼는데 30cm 올리다 빠짐 -> 5cm 에서 3초 더
         H5 = label_h(D.heights(D.grab_depth()), C); occl5 = bad_label(H5, 50.0); drop5 = None if occl5 else (H0 + 50.0) - H5
         hold = g3 is not None and (g2 - g3) < 8.0
         print(f"     5cm 3초: 그리퍼 {g2:.0f}->{g3:.0f} ({'버팀' if hold else '줄어듦'})" + ("" if occl5 else f", 뚜껑 쪽 처짐 {drop5:+.0f}mm"), flush=True)
-        if hold and (occl5 or abs(drop5) < 0.8 * 50.0): level = True; break   # 5cm 에서도 끝이 바닥에 안 닿고 그리퍼가 버티면 통과
+        vt5 = vis_rel("5cm")
+        if vt5 is not None: tilt = vt5; vstep = float(np.clip(1.2 * abs(vt5), 5.0, 20.0)) * (1 if vt5 > 0 else -1)
+        ok5 = (abs(vt5) <= TILT_OK) if vt5 is not None else (VT0 is None and (occl5 or abs(drop5) < 0.8 * 50.0))   # 비전으로 쟀으면 그 값만, 비전을 아예 못 쓸 때만 예전 방식
+        if hold and ok5: gtry(k, "ok", tilt); level = True; break
+        if hold and vt5 is not None: print(f"     기울기 {vt5:+.1f}도 > {TILT_OK:.0f}도 -> 실패로 보고 내려놓고 무게 중심 쪽으로 다시 잡음", flush=True)   # 5cm 에서도 끝이 바닥에 안 닿고 그리퍼가 버티면 통과
         if not occl5: drop = drop5
         mv(xg, yg, ZG + LIFT, 6)
-    if drop is None:   # 가려져서 기울기를 모름 + 버티지 못함 -> 번갈아 더듬기
+    if vstep is not None:   # 10-27 비전 기울기 쪽으로 (뚜껑 쪽이 낮으면 뚜껑 쪽으로)
+        step = vstep
+    elif drop is None:   # 가려져서 기울기를 모름 + 버티지 못함 -> 번갈아 더듬기
         if not blind: break
         step = blind.pop(0)                                                      # +: 뚜껑 쪽
     else:
         mag = 15.0 if abs(drop) > 0.8 * LIFT else float(np.clip(0.6 * abs(drop), 3.0, 15.0))
         step = mag if drop > 0 else -mag                                         # 뚜껑 쪽이 처지면 뚜껑 쪽으로
+    # 10-26 18:40: 뚜껑 쪽(뽁뽁이)으로는 195mm 까지만. 이미 끝이면 처져도 그리퍼가 버티는지(5cm 3초)만 보고 통과, 못 버티면 내려놓고 끝
+    s_now = float(np.dot(np.array([xg, yg]) - np.array(cap_xy[:2]), U))
+    if s_now - step < GRIP_MIN_FROM_CAP - 1.0:
+        if s_now <= GRIP_MIN_FROM_CAP + 1.0:
+            print(f"     뚜껑 쪽은 뽁뽁이(잡을 수 없음) -> 이 자리(뚜껑에서 {s_now:.0f}mm)에서 처진 채 버티는지 봄", flush=True)
+            if stable:
+                mv(xg, yg, ZG + 50.0, 6); time.sleep(3.0); g3 = grip(); hold = g3 is not None and (g2 - g3) < 8.0
+                print(f"     5cm 3초: 그리퍼 {g2:.0f}->{g3}", flush=True)
+                if hold: gtry(k, "ok", tilt); level = True; break
+            break
+        step = s_now - GRIP_MIN_FROM_CAP
     mv(xg, yg, ZG + 1.0, 8); G.gripper_cmd(750, 200); G.gripper_wait(timeout=12.0); time.sleep(0.5); mv(xg, yg, 220, 20)
     xg -= step * U[0]; yg -= step * U[1]; shift = step   # 병 축을 따라 (U: 뚜껑 -> 몸통 단위벡터, 앞뒤로 놓인 병도 됨)
-    print(f"     뚜껑 쪽으로 {shift:+.0f}mm 옮김 -> x{xg:.0f} y{yg:.0f}", flush=True)
+    print(f"     뚜껑 쪽으로 {shift:+.0f}mm 옮김 -> x{xg:.0f} y{yg:.0f}", flush=True); gtry(k, "regrip", tilt, shift)
 if not level:
-    print("수평 못 찾음 -> 내려놓고 끝", flush=True); mv(xg, yg, ZG + 1.0, 8); G.gripper_cmd(750, 200); G.gripper_wait(timeout=12.0); mv(xg, yg, 260, 20); fail("무게 중심을 못 찾음 (병이 손가락에서 돎)")
+    gtry(k, "fail", tilt); print("수평 못 찾음 -> 내려놓고 끝", flush=True); mv(xg, yg, ZG + 1.0, 8); G.gripper_cmd(750, 200); G.gripper_wait(timeout=12.0); mv(xg, yg, 260, 20); fail("무게 중심을 못 찾음 (병이 손가락에서 돎)")
 
 # ---- 3. 운반 ----
 pts, msg = plan(xg, yg, CAPF); print("운반 계획:", msg, flush=True)

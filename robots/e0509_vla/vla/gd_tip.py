@@ -38,10 +38,11 @@ def snap():
         if ok and f is not None: return f
         time.sleep(1.5)
     return None
-IMG = snap(); BG = cv2.imread(str(HERE / "table_empty.jpg"))
-OCC = None
-if IMG is not None and BG is not None:
-    OCC = (cv2.absdiff(cv2.GaussianBlur(IMG, (5, 5), 0), cv2.GaussianBlur(BG, (5, 5), 0)).max(axis=2) > 28).astype(np.uint8)
+BG = cv2.imread(str(HERE / "table_empty.jpg")); OCC = None
+def set_image(img):
+    """빈 작업대 사진과 다른 픽셀(물건 있음) 지도. 10-26: layout_check.py 가 불러 쓰도록 함수로"""
+    global OCC
+    OCC = None if img is None or BG is None else (cv2.absdiff(cv2.GaussianBlur(img, (5, 5), 0), cv2.GaussianBlur(BG, (5, 5), 0)).max(axis=2) > 28).astype(np.uint8)
 rv, tv = np.array(P["rvec"]), np.array(P["tvec"])
 def strip_busy(B, d):
     """10-26: 넘어질 자리(병 바닥에서 9~33cm, 폭 12cm, 높이 0~9cm)에 다른 물건이 있나 -> 빈 작업대 사진과 다른 픽셀 비율"""
@@ -77,38 +78,45 @@ def plan(B):
         if best is None or margin > best[0]: best = (margin, deg, S, E, w)
     return best
 
-import rclpy
-node = None
-if not DRY:
-    rclpy.init(); node = rclpy.create_node("gd_tip", namespace="dsr01")
-    from std_msgs.msg import String as _Str
-    _ev = node.create_publisher(_Str, "pick/event", 10); time.sleep(0.5)
-def emit(event, **kw):   # 10-26 트윈: 서 있음 / 넘어지는 동작
-    if node is None: return
-    m = _Str(); d = {"event": event, "object": "drink", "t": time.time()}
-    d.update({k: ([round(float(x), 1) for x in v] if hasattr(v, "__len__") else round(float(v), 2)) for k, v in kw.items()})
-    m.data = json.dumps(d); _ev.publish(m); rclpy.spin_once(node, timeout_sec=0.05)
-cap_px = [float(sys.argv[1]), float(sys.argv[2])]
-B = px_h_to_xy(cap_px, CAP_H)
-print(f"서 있는 병 자리 x{B[0]:.0f} y{B[1]:.0f}", flush=True); emit("standing", xy=B)
-pl = plan(B)
-if pl is None: print("!! 작업대 안에 눕힐 수 있는 방향이 없음", flush=True); sys.exit(2)
-margin, deg, S, E, w = pl
-print(f"밀기 방향 {deg}도 (작업대 끝까지 여유 {margin:.0f}mm, 경로 {w:.3f}): 시작 x{S[0]:.0f} y{S[1]:.0f} -> x{E[0]:.0f} y{E[1]:.0f}", flush=True)
-if DRY: sys.exit(0)
 
-import DR_init; DR_init.__dsr__id, DR_init.__dsr__model, DR_init.__dsr__node = "dsr01", "e0509", node
-from dsr_gripper import gripper_api as G
-from dsr_msgs2.srv import MoveLine
-mvl = node.create_client(MoveLine, "/dsr01/dsr_controller2/motion/move_line")
-def mv(x, y, z, v):
-    q = MoveLine.Request(); q.pos = [float(x), float(y), float(z)] + ORI; q.vel = [float(v), 30.0]; q.acc = [2.0 * v, 60.0]; q.ref = 0; q.mode = 0; q.sync_type = 0
-    mvl.wait_for_service(timeout_sec=5.0); f = mvl.call_async(q); rclpy.spin_until_future_complete(node, f, timeout_sec=90.0)
-    if not (f.result() and f.result().success): print(f"!! 이동 실패 x{x:.0f} y{y:.0f} z{z:.0f}", flush=True); sys.exit(3)
-G.gripper_cmd(0, 200); G.gripper_wait(timeout=12.0); time.sleep(0.5)       # 손가락을 모아 막대처럼
-mv(*START, 40); mv(S[0], S[1], Z + 100, 30); mv(S[0], S[1], Z, 20)
-emit("tip_push", xy=B, deg=float(deg))
-mv(E[0], E[1], Z, 30)                                                      # 천천히 밀어 넘어뜨림
-mv(E[0], E[1], Z + 100, 30); mv(LOOK[0], LOOK[1], Z + 100, 40); mv(*LOOK, 20)   # 10-26: 누운 병이 시작 자세 그리퍼 밑(로봇 쪽)에 깔려 가려짐 -> 비킨 자리에서 끝내고 gd_pick 이 거기서 찍음
-G.gripper_cmd(750, 200); G.gripper_wait(timeout=12.0)
-print("밀기 끝", flush=True)
+def _main():
+    global node
+    set_image(snap())
+    import rclpy
+    if not DRY:
+        rclpy.init(); node = rclpy.create_node("gd_tip", namespace="dsr01")
+        from std_msgs.msg import String as _Str
+        _ev = node.create_publisher(_Str, "pick/event", 10); time.sleep(0.5)
+    def emit(event, **kw):   # 10-26 트윈: 서 있음 / 넘어지는 동작
+        if node is None: return
+        m = _Str(); d = {"event": event, "object": "drink", "t": time.time()}
+        d.update({k: ([round(float(x), 1) for x in v] if hasattr(v, "__len__") else round(float(v), 2)) for k, v in kw.items()})
+        m.data = json.dumps(d); _ev.publish(m); rclpy.spin_once(node, timeout_sec=0.05)
+    cap_px = [float(sys.argv[1]), float(sys.argv[2])]
+    B = px_h_to_xy(cap_px, CAP_H)
+    print(f"서 있는 병 자리 x{B[0]:.0f} y{B[1]:.0f}", flush=True); emit("standing", xy=B)
+    pl = plan(B)
+    if pl is None: print("!! 작업대 안에 눕힐 수 있는 방향이 없음", flush=True); sys.exit(2)
+    margin, deg, S, E, w = pl
+    print(f"밀기 방향 {deg}도 (작업대 끝까지 여유 {margin:.0f}mm, 경로 {w:.3f}): 시작 x{S[0]:.0f} y{S[1]:.0f} -> x{E[0]:.0f} y{E[1]:.0f}", flush=True)
+    if DRY: sys.exit(0)
+
+    import DR_init; DR_init.__dsr__id, DR_init.__dsr__model, DR_init.__dsr__node = "dsr01", "e0509", node
+    from dsr_gripper import gripper_api as G
+    from dsr_msgs2.srv import MoveLine
+    mvl = node.create_client(MoveLine, "/dsr01/dsr_controller2/motion/move_line")
+    def mv(x, y, z, v):
+        q = MoveLine.Request(); q.pos = [float(x), float(y), float(z)] + ORI; q.vel = [float(v), 30.0]; q.acc = [2.0 * v, 60.0]; q.ref = 0; q.mode = 0; q.sync_type = 0
+        mvl.wait_for_service(timeout_sec=5.0); f = mvl.call_async(q); rclpy.spin_until_future_complete(node, f, timeout_sec=90.0)
+        if not (f.result() and f.result().success): print(f"!! 이동 실패 x{x:.0f} y{y:.0f} z{z:.0f}", flush=True); sys.exit(3)
+    G.gripper_cmd(0, 200); G.gripper_wait(timeout=12.0); time.sleep(0.5)       # 손가락을 모아 막대처럼
+    mv(*START, 40); mv(S[0], S[1], Z + 100, 30); mv(S[0], S[1], Z, 20)
+    emit("tip_push", xy=B, deg=float(deg))
+    mv(E[0], E[1], Z, 30)                                                      # 천천히 밀어 넘어뜨림
+    mv(E[0], E[1], Z + 100, 30); mv(LOOK[0], LOOK[1], Z + 100, 40); mv(*LOOK, 20)   # 10-26: 누운 병이 시작 자세 그리퍼 밑(로봇 쪽)에 깔려 가려짐 -> 비킨 자리에서 끝내고 gd_pick 이 거기서 찍음
+    G.gripper_cmd(750, 200); G.gripper_wait(timeout=12.0)
+    print("밀기 끝", flush=True)
+
+node = None
+if __name__ == "__main__":
+    _main()

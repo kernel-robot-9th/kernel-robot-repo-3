@@ -26,7 +26,7 @@ def camera_busy():
     """주문 중이거나 다른 프로그램(실행·수집)이 카메라를 쓰는 중이면 True"""
     with lock:
         if order and order["state"] == "running": return True
-    r = subprocess.run(["pgrep", "-f", "vla_test/(vla_run|collect|pick_loop|gd_pick|gd_tip|gd_grasp_test|gd_tilt_regrasp|cam_align)\\.py"], capture_output=True)
+    r = subprocess.run(["pgrep", "-f", "vla_test/(vla_run|collect|pick_loop|gd_pick|gd_tip|gd_grasp_test|gd_tilt_regrasp|cam_align|layout_check)\\.py"], capture_output=True)
     return r.returncode == 0
 
 def sync_loop(pub):
@@ -104,15 +104,44 @@ def on_event(msg):
             elif "AUTONOMOUS" in r or "STANDBY" in r: o["fail_reason"] = "로봇이 대기 상태가 아니에요 (서보·모드 확인)"
             else: o.setdefault("fail_reason", f"로봇이 안전을 위해 멈췄어요: {r}" if r else "로봇이 안전을 위해 멈췄어요")
 
+def layout(units):
+    """10-26: layout_check.py (카메라 한 장으로 배치 검사·다음 상품). 실패하면 None -> 예전 순서(게토레이 마지막)"""
+    try:
+        r = subprocess.run([sys.executable, "-u", str(HERE / "layout_check.py")] + list(units), capture_output=True, text=True, timeout=90)
+        for line in r.stdout.splitlines()[::-1]:
+            if line.startswith("LAYOUT_JSON "): return json.loads(line[12:]), r.stderr[-1500:]
+        return None, r.stderr[-1500:]
+    except Exception as ex:
+        return None, str(ex)
+
 def worker(o):
     global order
-    with lock:   # 10-26: 서 있는 게토레이(32cm)가 다른 상품 집는 길을 막아 충돌(축2) -> 게토레이를 먼저 처리
-        # 10-26 사용자: 게토레이는 1번 칸에 세워 두고 다른 상품을 다 집은 뒤 마지막에 (밀어 눕혀 집기)
-        if "drink" in o["units"]: o["units"] = [u for u in o["units"] if u != "drink"] + [u for u in o["units"] if u == "drink"]
-    for i, u in enumerate(o["units"]):
+    with lock: o["message"] = "작업대 배치를 확인하고 있어요"
+    done, need = [], list(o["units"])
+    while need:
         with lock:
             if o["cancel"]: o["state"] = "cancelled"; o["message"] = "요청대로 남은 상품은 담지 않았어요"; return
-            o["index"] = i; o["phase"] = 0; o["unit_ok"] = None; o.pop("fail_reason", None); o.pop("last_cause", None)
+        # 10-26: 서 있는 게토레이가 팔 몸체에 걸려 충돌 + 놓는 칸 때문에 중간에 멈춤 -> 상품마다 카메라로 배치를 보고 지금 안전한 상품을 고름.
+        # 처음 검사에서 끝까지 막히는 상품이 있으면 로봇이 움직이기 전에 알려 줌
+        # 10-26 18:30: 앞 실패 뒤 팔이 병 바로 위(z260)에 남아 사진을 가림 -> 게토레이를 못 찾음. 작업대 위 낮은 곳이면 먼저 시작 자세로 (위로 먼저 올림)
+        try:
+            from fk import Chain
+            p_ = Chain().fk(joint["q"])[0] if "q" in joint else None
+            if p_ is not None and 285 <= p_[0] <= 720 and -235 <= p_[1] <= 235 and p_[2] < 400:
+                with lock: o["message"] = "팔을 시작 자세로 옮기고 있어요"
+                with (LOGS / f"{o[id]}.log").open("a") as lf:
+                    subprocess.run([sys.executable, "-u", str(HERE / "vla_run.py"), "--home"], stdout=lf, stderr=subprocess.STDOUT, timeout=180)
+        except Exception as ex: print("시작 자세로 옮기기 실패", ex, flush=True)
+        lay, err = layout(need)
+        with (LOGS / f"{o['id']}.log").open("a") as lf: lf.write(f"[배치 검사] {json.dumps(lay, ensure_ascii=False)}\n{err}\n")
+        if lay is not None and lay.get("problems"):
+            with lock:
+                o["state"] = "failed"; o["message"] = ("담기 전에 확인해 주세요: " if not done else "") + " / ".join(lay["problems"])
+            return
+        u = lay["next"] if lay is not None and lay.get("next") in need else ([x for x in need if x != "drink"] + [x for x in need if x == "drink"])[0]
+        need.remove(u); i = len(done)
+        with lock:
+            o["units"] = done + [u] + need; o["index"] = i; o["phase"] = 0; o["unit_ok"] = None; o.pop("fail_reason", None); o.pop("last_cause", None)
             o["message"] = f"{NAMES[u]} 담기를 시작해요"
         with (LOGS / f"{o['id']}.log").open("a") as lf:
             cmd = [sys.executable, "-u", str(HERE / "gd_pick.py")] if u == "drink" else [sys.executable, "-u", str(HERE / "pick_loop.py"), "--object", u]
@@ -120,7 +149,7 @@ def worker(o):
         time.sleep(1.0)   # 마지막 이벤트가 도착할 시간
         with lock:
             if o.get("unit_ok"):
-                o["done_units"] = i + 1; continue
+                done.append(u); o["done_units"] = len(done); continue
             why = o.get("fail_reason") or "로봇이 멈췄어요"
             cause = f" ({o['last_cause']})" if o.get("last_cause") else ""
             o["state"] = "failed"; o["message"] = f"{why}{cause}. 직원을 불러 주세요"

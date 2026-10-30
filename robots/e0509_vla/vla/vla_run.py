@@ -65,7 +65,7 @@ def near_gripper(obj, frame):
             b = find_box(frame); return b is not None and b[1] < 175 and abs(b[0] - 335) < 90
     except Exception: return False
     return False
-DRINK_SPOT, DRINK_R, DRINK_ZMIN = (346.0, 150.2), 120.0, 480.0   # 10-26: 게토레이는 1번 칸에 세워 두고 마지막에 처리 -> 그 둘레 12cm 는 z480 아래로 못 지나감
+DRINK_SPOT, DRINK_R, DRINK_ZMIN = (515.6, 161.5), 120.0, 480.0   # 10-26 17:40 1번 -> 2번 칸 (1번은 4번 칸 집을 때 팔 몸체에 걸림). 게토레이는 2번 칸에 세워 두고 마지막에 처리 -> 그 둘레 12cm 는 z480 아래로 못 지나감
 LOOK = (430.0, 250.0, 450.0)   # 10-22 오후: 바구니 쪽(x400 y-350)으로 왔다 가는 게 헛걸음처럼 보임(사용자) -> 작업대 오른쪽 바깥. 경로 조작성 0.051 이상(random_area_check 로 계산)
 _LOOK_OLD = (400.0, -350.0, 450.0)   # 10-22: 팔을 비켜 작업대 전체를 보는 자세(수집 때 매번 오가던 바구니 쪽 대기 자세). 그리퍼가 작업대 밖
 def cam_locate(obj, frame, occl=True, px_out=None):
@@ -290,11 +290,12 @@ def main():
         q0 = fresh_q(); p0 = FKC.fk(q0)[0]
         if np.linalg.norm(target - p0) < 0.5: return
         # 10-22: 바구니 보호 구역 (바구니 X350·Y-500, 36x26cm, 높이 30cm + 여유). 경로가 이 위를 z430 아래로 지나면 거부
+        _up_only = float(np.hypot(*(target[:2] - p0[:2]))) < 2.0 and target[2] >= p0[2]
         for t_ in np.linspace(0.0, 1.0, 12):
             pt_ = p0 + (target - p0) * t_
             if pt_[2] < 430.0 and 150.0 <= pt_[0] <= 560.0 and -680.0 <= pt_[1] <= -330.0:
                 raise Stop(f"{name}: 경로가 바구니 위를 낮게 지남 (x{pt_[0]:.0f} y{pt_[1]:.0f} z{pt_[2]:.0f}) -> 거부")
-            if pt_[2] < DRINK_ZMIN and math.hypot(pt_[0] - DRINK_SPOT[0], pt_[1] - DRINK_SPOT[1]) < DRINK_R:
+            if pt_[2] < DRINK_ZMIN and math.hypot(pt_[0] - DRINK_SPOT[0], pt_[1] - DRINK_SPOT[1]) < DRINK_R and not _up_only:   # 18:42: 구역 안에서 위로만 빠지는 것은 허용 (게토레이 실패 뒤 정리상승이 거부돼 팔이 병 위에 남음)
                 raise Stop(f"{name}: 경로가 1번 칸(게토레이 자리) 옆을 낮게 지남 (x{pt_[0]:.0f} y{pt_[1]:.0f} z{pt_[2]:.0f}) -> 거부")
         check_path(q0, p0, target)
         seg = target - p0; L = float(np.linalg.norm(seg)); t0 = time.monotonic(); maxdev = 0.0
@@ -350,6 +351,8 @@ def main():
                 if cur[2] < 300.0: go([cur[0], cur[1], 300.0], 30.0, "정리상승")
                 go([520.0, cur[1], max(cur[2], 300.0)], 30.0, "정리당기기"); cur = FKC.fk(fresh_q())[0]
             if cur[2] < START[2]: go([cur[0], cur[1], START[2]], 30.0, "정리상승")
+            if math.hypot(cur[0] - DRINK_SPOT[0], cur[1] - DRINK_SPOT[1]) < DRINK_R + 30.0:   # 18:45: 게토레이 자리 위면 z480 까지 올라 옆으로 빠진 뒤 내려감
+                go([cur[0], cur[1], DRINK_ZMIN], 30.0, "정리상승(게토레이 자리)"); go([START[0], START[1], DRINK_ZMIN], 40.0, "시작자세위로")
             go(list(START), 40.0, "시작자세로")
             print("정리 끝: 시작 자세", flush=True); return 0
         if a.point:
@@ -474,10 +477,18 @@ def main():
                         _R, _ = cv2.Rodrigues(np.array(_P["rvec"])); _C = -_R.T @ np.array(_P["tvec"])
                         _u = cv2.undistortPoints(np.array([[_r["cap_px"]]], np.float64), _K, _D).ravel(); _d = _R.T @ np.array([_u[0], _u[1], 1.0])
                         _B = (_C + (315.0 - _C[2]) / _d[2] * _d)[:2]
-                        _a, _b = np.array(START[:2]), np.array(hover[:2]); _t = float(np.clip(np.dot(_B - _a, _b - _a) / max(np.dot(_b - _a, _b - _a), 1e-6), 0, 1))
-                        _dist = float(np.linalg.norm(_B - (_a + _t * (_b - _a))))
-                        if _dist < 150.0 and math.hypot(_B[0] - DRINK_SPOT[0], _B[1] - DRINK_SPOT[1]) > 60.0:
-                            raise Stop(f"서 있는 게토레이(x{_B[0]:.0f} y{_B[1]:.0f})가 {a.object} 가는 길 {_dist:.0f}mm 옆에 있음 -> 게토레이를 먼저 담거나 눕혀 주세요")
+                        # 10-26 17:33: 4번 칸(x350 y5) 초코송이 집다가 팔꿈치~손목 몸체가 1번 칸 병에 부딪힘(축2 충돌 7060). 그리퍼 끝 경로만 보던 검사로는 못 막음
+                        # -> 물건 위 z260/200/130 자세의 팔 관절 사이 선분과 병(높이 0~320) 사이 거리. 사고 자세 139mm -> 200mm 미만이면 출발 안 함
+                        _CH = [Chain(tip=f"link_{_i}") for _i in range(2, 7)]; _qq = fresh_q(); _clr = 1e9
+                        for _z in (260.0, 200.0, 130.0):
+                            _qq, _ = _ik(_qq, np.array([hover[0], hover[1], _z]), zyz_to_matrix(0, 180, 0)); _P = [c_.fk(_qq)[0] for c_ in _CH]
+                            for _p0, _p1 in zip(_P, _P[1:]):
+                                for _t in np.linspace(0, 1, 30):
+                                    _p = _p0 + (_p1 - _p0) * _t
+                                    if _p[2] <= 380.0: _clr = min(_clr, float(math.hypot(_p[0] - _B[0], _p[1] - _B[1])))
+                        print(f"     서 있는 게토레이 x{_B[0]:.0f} y{_B[1]:.0f} 와 팔 몸체 거리 {_clr:.0f}mm", flush=True)
+                        if _clr < 200.0:
+                            raise Stop(f"서 있는 게토레이(x{_B[0]:.0f} y{_B[1]:.0f})가 {a.object} 집는 팔에 걸림 (팔 몸체와 {_clr:.0f}mm) -> {a.object} 를 게토레이에서 먼 칸으로 옮겨 주세요")
                 except Stop: raise
                 except Exception as _ex: print("     (서 있는 병 검사 실패)", _ex, flush=True)
                 if clear_view or FKC.fk(fresh_q())[0][1] < -300.0:

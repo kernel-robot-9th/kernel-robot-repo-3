@@ -8,7 +8,7 @@ import cv2, numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROI = (190, 470, 30, 370)          # 작업대 영역 (x0, x1, y0, y1). 10-26: 1번 칸에 세운 병 뚜껑이 y53 에 찍혀 위로 넓힘
-CAP_AREA = (120, 900)              # 뚜껑 빨강 면적(px). 새우깡 봉지는 2000 이상
+CAP_AREA = (60, 900)               # 뚜껑 빨강 면적(px). 새우깡 봉지는 2000 이상. 10-26 18:45: 뽁뽁이가 뚜껑을 가려 74px -> 60 부터
 GRIP_PX = 28                       # 뚜껑 중심에서 몸통 쪽으로 병목까지 (약 5cm)
 
 def red_mask(bgr):
