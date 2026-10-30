@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import subprocess
 import signal
+import shutil
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -46,16 +47,42 @@ def prepare():
     return str(directory)
 
 
+def configure_c(directory, control_path=Path('runtime/field/pinky-control.json')):
+    """Connect the existing demo to C; preserve its DB, journals and parking Python."""
+    directory, control_path = Path(directory), Path(control_path)
+    control = json.loads(control_path.read_text())
+    control['stations']['C']['python'] = control['stations']['C']['root'] + '/runtime/field/c-yolo-venv/bin/python'
+    readiness_path = directory/'readiness.json'
+    readiness = json.loads(readiness_path.read_text())
+    readiness.update(handoff_arrival_only=False, unload_engine='yolo')
+    worker_path = directory/'worker-c.json'
+    source = worker_path if worker_path.exists() else directory/'worker-b.json'
+    worker = json.loads(source.read_text())
+    worker.update(node_id='gateway-c', remote_arm_zone='C', unload_engine='yolo')
+    for key in ('mobile_factory', 'mobile_profiles', 'parking'):
+        worker.pop(key, None)
+    backup = directory/('before-c-link-'+datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d-%H%M%S-%f'))
+    backup.mkdir()
+    for path, value in [(control_path, control), (readiness_path, readiness), (worker_path, worker)]:
+        if path.exists(): shutil.copy2(path, backup/path.name)
+        save(path, value)
+    print('C 연결 설정 준비: '+str(directory)+' / 백업: '+str(backup)+' (프로세스·DB 변경 없음)')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['prepare', 'server', 'worker-a', 'worker-b', 'queue', 'start-workers', 'stop-workers'])
+    parser.add_argument('operation', choices=['prepare', 'configure-c', 'server', 'worker-a', 'worker-b', 'worker-c', 'queue', 'start-workers', 'stop-workers'])
     args = parser.parse_args()
     if args.operation == 'prepare':
         print('준비 완료 (장비 실행 없음): '+prepare())
         return
     directory = Path(json.loads(POINTER.read_text())['directory'])
+    if args.operation == 'configure-c':
+        configure_c(directory)
+        return
     if args.operation in ('start-workers', 'stop-workers'):
-        for zone in ('a', 'b'):
+        for zone in ('a', 'b', 'c'):
+            if not (directory/('worker-'+zone+'.json')).exists(): continue
             pidfile = directory/('worker-'+zone+'.pid')
             pid = int(pidfile.read_text()) if pidfile.exists() else 0
             process = Path('/proc')/str(pid)/'cmdline'

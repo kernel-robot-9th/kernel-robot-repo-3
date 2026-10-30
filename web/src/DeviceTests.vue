@@ -11,7 +11,7 @@ type Trial = {
   stopped: { source: string } | null; observation: unknown; result: { kind: string; data: Record<string, unknown> } | null;
   review: unknown; timeline: { at: number; kind: string; data: Record<string, unknown> }[];
 }
-type Report = { online: boolean; allow_motion: boolean; operations: string[]; sides: string[]; issues: string[];
+type Report = { online: boolean; allow_motion: boolean; operations: string[]; sides: string[]; issues: string[]; unload_engine?: string;
   checks: { name: string; state: string }[]; inspection: string; python?: string; slots?: Record<string, number[]>; revision?: {commit: string; modified: boolean | null} }
 type State = { mode: string; test_only: boolean; distributed: boolean; hold: string | null;
   jobs: Record<string, Trial>; nodes: Record<string, Report>; server_time: number }
@@ -31,6 +31,8 @@ const pending = ref<Request | null>(savedPending())
 const report = computed(() => state.value?.nodes[node.value])
 const rows = computed(() => Object.values(state.value?.jobs || {}).filter(j => j.node_id === node.value && j.kind !== 'NAVIGATE').reverse())
 const job = computed(() => state.value?.jobs[selected.value])
+const yoloTrial = computed(() => job.value?.kind === 'HANDOFF' &&
+  (job.value?.result?.data.engine === 'yolo_unload' || state.value?.nodes[job.value.node_id]?.unload_engine === 'yolo'))
 const stock = computed(() => props.products.filter(p => p.station === (node.value === 'gateway-b' ? 'load-b' : 'load-a')))
 const motion = computed(() => kind.value === 'PICK' || kind.value === 'HANDOFF')
 const final = (status: string) => ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(status)
@@ -61,7 +63,7 @@ async function send(retry = false) {
     node_id: node.value, kind: kind.value, request_id: requestId(), prepared: motion.value && prepared.value,
     simulate_failure: state.value?.mode === 'mock' && motion.value && simulateFailure.value,
     parameters: kind.value === 'PICK' ? { sku: sku.value, robot_id: robot.value, slot: slot.value }
-      : kind.value === 'HANDOFF' ? { side: side.value, skus: handoffSkus.value } : {},
+      : kind.value === 'HANDOFF' ? { side: side.value, skus: handoffSkus.value, robot_id: robot.value } : {},
   }
   pending.value = body; sessionStorage.setItem(pendingKey, JSON.stringify(body)); busy.value = true
   try {
@@ -112,7 +114,7 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
       <p v-if="state?.test_only" class="muted">시험 전용</p>
       <p v-if="state?.hold" class="alert danger">동작 시험 {{ shortId(state.hold) }} 점유 유지 <button class="secondary" @click="choose(state.hold)">해당 시험 보기</button></p>
       <div class="test-fields">
-        <label>대상 중계<select v-model="node" @change="changeNode"><option value="gateway-a">A · YOLO 적재</option><option value="gateway-b">B · YOLO 적재</option><option value="gateway-c">C · ACT 하역</option></select></label>
+        <label>대상 중계<select v-model="node" @change="changeNode"><option value="gateway-a">A · YOLO 적재</option><option value="gateway-b">B · YOLO 적재</option><option value="gateway-c">C · 하역</option></select></label>
         <label>시험 명령<select v-model="kind"><option value="PING">통신 응답 확인</option><option value="INSPECT">설정 검사</option><option v-if="node !== 'gateway-c'" value="PICK">상품 1개 적재</option><option v-else value="HANDOFF">바구니 하역</option></select></label>
       </div>
       <p><span class="status-dot" :class="{ online: report?.online }"></span>{{ report?.online ? '시험 응답 중' : '시험 응답 대기' }}</p>
@@ -129,13 +131,15 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
         <label>적재 위치<select v-model.number="slot"><option v-for="index in [0,1,2]" :key="index" :value="index" :disabled="state?.mode === 'hardware' && !report?.slots?.[robot]?.includes(index)">슬롯 {{ index + 1 }}{{ state?.mode === 'hardware' && !report?.slots?.[robot]?.includes(index) ? ' · 자세 미등록' : '' }}</option></select></label>
       </div>
       <template v-if="kind === 'HANDOFF'">
-        <label>고객 장바구니 방향<select v-model="side"><option value="left">왼쪽 · ACT v2 5만</option><option value="right" :disabled="!report?.sides?.includes('right')">오른쪽 · {{ report?.sides?.includes('right') ? '실행부 등록 방향' : '모델 미등록' }}</option></select></label>
+        <label>주차한 로봇<select v-model="robot"><option value="pinky-1">P1 흰색</option><option value="pinky-2">P2 빨간색</option></select></label>
+        <label>고객 장바구니 방향<select v-model="side"><option value="left">왼쪽</option><option value="right" :disabled="!report?.sides?.includes('right')">오른쪽 · {{ report?.sides?.includes('right') ? '실행부 등록 방향' : '미등록' }}</option></select></label>
+        <p v-if="report?.unload_engine === 'yolo'" class="muted">전체 검출 모드에서는 아래 상품 목록은 시험 기록용이며, 바구니 안에서 검출한 상품을 매번 다시 확인해 하역합니다.</p>
         <label>현재 카트 상품 (1~3개)<select :value="''" @change="addSku(($event.target as HTMLSelectElement).value)"><option value="">상품 추가</option><option v-for="p in products" :key="p.sku" :value="p.sku">{{ p.name }}</option></select></label>
         <div class="button-row"><button v-for="(item, i) in handoffSkus" :key="i" class="secondary" @click="handoffSkus.splice(i, 1)">{{ products.find(p => p.sku === item)?.name }} × 제거</button></div>
       </template>
       <label v-if="motion" class="check-line"><input v-model="prepared" type="checkbox" /> 바구니 고정 · 상품·작업 영역 준비 완료</label>
       <label v-if="motion && state?.mode === 'mock'" class="check-line"><input v-model="simulateFailure" type="checkbox" /> 이번 모의 동작에서 실패 응답 시험</label>
-      <button class="primary" :disabled="busy || !!pending || !!connectionError || !state?.distributed || (motion && (!prepared || !report?.online || !report?.allow_motion || !!state?.hold))" @click="send()">{{ motion ? '선택한 동작 시험 요청' : '확인 요청' }}</button>
+      <button class="primary" :disabled="busy || !!pending || !!connectionError || !state?.distributed || (motion && (!prepared || !report?.online || !report?.allow_motion || (kind !== 'PICK' && !!state?.hold)))" @click="send()">{{ motion ? '선택한 동작 시험 요청' : '확인 요청' }}</button>
       <div v-if="pending" class="alert danger">이전 요청의 응답을 확인 중입니다. 같은 요청 ID로 재전송하면 중복 실행하지 않습니다. <button :disabled="busy" @click="send(true)">동일 요청 재전송</button></div>
     </div>
 
@@ -149,7 +153,7 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
       <p class="muted">화면의 중지 버튼은 소프트웨어 요청입니다. 수락 응답만으로 실제 정지를 표시하지 않습니다.</p>
       <template v-if="['PICK','HANDOFF'].includes(job.kind)">
         <label>확인자<input v-model="operator" maxlength="80" placeholder="이름 또는 팀 내 식별값" /></label>
-        <fieldset v-if="job.kind === 'HANDOFF' && job.status === 'RUNNING' && !job.stop_requested_at"><legend>하역 완료 조건 관측</legend>
+        <fieldset v-if="job.kind === 'HANDOFF' && !yoloTrial && job.status === 'RUNNING' && !job.stop_requested_at"><legend>하역 완료 조건 관측</legend>
           <label class="check-line"><input v-model="facts.cart_visible" type="checkbox" /> 카트 내부가 보입니다</label>
           <label class="check-line"><input v-model="facts.cart_empty" type="checkbox" /> 카트가 비었습니다</label>
           <label class="check-line"><input v-model="facts.last_item_placed" type="checkbox" /> 마지막 물건이 지정한 좌우 장바구니 안에 놓였습니다</label>
@@ -159,7 +163,7 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
         </fieldset>
         <fieldset v-if="['WAIT_REVIEW','UNCERTAIN'].includes(job.status)"><legend>운영자 결과 확인</legend>
           <label class="check-line"><input v-model="stopped" type="checkbox" /> 실제 정지 확인</label>
-          <label class="check-line"><input v-model="placed" type="checkbox" /> 지정 슬롯·장바구니 상품 배치 확인</label>
+          <label class="check-line"><input v-model="placed" type="checkbox" /> {{ yoloTrial ? '바구니가 비었고 모든 상품이 지정 좌우 수령 바구니에 놓인 것을 확인' : '지정 슬롯·장바구니 상품 배치 확인' }}</label>
           <label v-if="job.status === 'UNCERTAIN'" class="check-line"><input v-model="processClosed" type="checkbox" /> 기존 실행부 종료 · 재실행 없음</label>
           <label>결과 메모<textarea v-model="note" maxlength="500" placeholder="실제로 확인한 결과나 실패 원인" /></label>
           <div class="button-row"><button :disabled="busy || !operator.trim() || !note.trim() || !stopped || !placed || job.status === 'UNCERTAIN' || job.result?.kind !== 'FINISHED' || !!job.stop_requested_at" @click="review(true)">작업 성공 확인 기록</button><button class="secondary" :disabled="busy || !operator.trim() || !note.trim() || !stopped" @click="review(false)">실패·중단 확인 기록</button></div>

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "device": "cpu",
+  "imgsz": 640,
+  "confidence": 0.3,
+  "stage_seconds": 6,
+  "unfold_seconds": 6,
+  "gripper_seconds": 0.8,
+  "stage_pause_seconds": 0.1,
+  "wrist_policy": "fixed",
+  "regions_source": "manual",
+  "pickup_regions_uv": {"pinky-1": [], "pinky-2": []},
+  "gripper": {"open_pulse": null, "close_pulse": null, "current_limit_raw": null, "settle_s": 0.3},
+  "classes": {
+    "PRODUCT_CLASS": {
+      "grasp_fraction": [0.5, 0.5],
+      "xy_offset_mm": [0, 0],
+      "pick_z_mm": null,
+      "hover_clearance_mm": 50,
+      "approach_extra_mm": 40,
+      "spatial_adjustments_by_robot": {}
+    }
+  }
+}

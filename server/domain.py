@@ -335,7 +335,9 @@ class Engine(OrderFleet):
         if kind == "HANDOFF":
             cmd["basket_id"] = self._session(task["session_id"])["basket_id"]
             cmd["basket_side"] = self._execution_session(task["session_id"], task["robot_id"])["basket_side"]
-            cmd["model_id"] = "act-left-v2-050000" if cmd["basket_side"] == "left" else self.readiness.get("right_model_id", "act-right-pending")
+            cmd['unload_engine'] = self.readiness.get('unload_engine', 'act')
+            if cmd['unload_engine'] != 'yolo':
+                cmd["model_id"] = "act-left-v2-050000" if cmd["basket_side"] == "left" else self.readiness.get("right_model_id", "act-right-pending")
         cmd["trip_id"] = task.get("trip_id")
         if kind == "STOP_POLICY":
             cmd["target_command_id"] = next(c["id"] for c in self.state["commands"].values()
@@ -581,7 +583,9 @@ class Engine(OrderFleet):
     def _execution_result(self, cmd, task, session, kind, data):
         kind = 'SUCCEEDED' if kind == 'TRANSFER_READY' else kind
         cmd.update(status=kind, result={'kind': kind, 'data': data})
-        if cmd['kind'] in {'PICK', 'HANDOFF'}:
+        yolo_handoff = cmd['kind'] == 'HANDOFF' and (
+            cmd.get('unload_engine') == 'yolo' or data.get('engine') == 'yolo_unload')
+        if cmd['kind'] in {'PICK', 'HANDOFF'} and not yolo_handoff:
             executed = data.get('executed_items', data.get('confirmed_items', []))
             self._confirm_items(cmd, {'confirmed_items': executed, 'basket_id': cmd.get('basket_id')},
                                 complete=False, physical=False)
@@ -596,6 +600,10 @@ class Engine(OrderFleet):
             task['state'] = 'ARM_WORK'
             self._command(task, 'PICK' if task['kind'] == 'LOAD' else 'HANDOFF', task['device_id'])
         elif cmd['kind'] in {'PICK', 'HANDOFF'}:
+            if yolo_handoff:
+                task['state'] = 'WAIT_UNLOAD_REVIEW'
+                self._log('handoff_review_pending', {'physical_delivery_confirmed': False}, command=cmd)
+                return
             if (cmd['kind'] == 'PICK' and self.readiness.get('handoff_arrival_only')
                     and task['robot_id'] != self._session(task['session_id'])['robot_id']):
                 task['state'] = session['state'] = 'WAIT_LOADED'

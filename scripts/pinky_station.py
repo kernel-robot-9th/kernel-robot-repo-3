@@ -55,15 +55,23 @@ def execute(request):
     from robot_gateway.hardware.evidence import EvidenceFiles
     from server.catalog import load_products
     config = json.loads(Path(f'runtime/field/gateway-{zone.lower()}.hardware.json').read_text())
+    if request['operation'] == 'inspect':
+        from robot_gateway.test_agent import HardwareTrials
+        report = HardwareTrials(config, None, execute=True).report
+        # Remote arm jobs use this same station directly; the worker's armed flag
+        # is not consulted by that execution path.
+        report['issues'] = [issue for issue in report['issues'] if not issue.startswith('armed=false:')]
+        report['allow_motion'] = not report['issues']
+        return report
     evidence = EvidenceFiles(config['evidence_directory'])
     if zone == 'C':
-        from robot_gateway.hardware.act import ActArm
-        arm = ActArm(config['act'], evidence, frames)
+        from robots.omx_yolo_unload.runtime import create_arm
+        arm = create_arm(config, evidence, frames)
     else:
         from robot_gateway.hardware.yolo import YoloArm
         arm = YoloArm(config['yolo'], evidence, frames, load_products())
     command = request['command']
-    if zone == 'C' and command['kind'] == 'HANDOFF':
+    if zone == 'C' and config.get('unload_engine', 'act') == 'act' and command['kind'] == 'HANDOFF':
         command['model_id'] = config['act']['models'][command['basket_side']]['id']
     if request.get('interactive') and command['kind'] == 'HANDOFF':
         original_read = evidence.read
@@ -79,8 +87,8 @@ def execute(request):
         return method(command, cancelled)
     except Exception as exc:
         print('CARTRINA_ERROR='+json.dumps({'reason': str(exc),
-            'executed_items': getattr(arm, 'executed', []) if command['kind'] == 'PICK' else [],
-            'physical_loading_confirmed': False}, ensure_ascii=False), flush=True)
+            'executed_items': getattr(arm, 'executed', []) if command['kind'] in ('PICK', 'HANDOFF') else [],
+            'physical_loading_confirmed': False, 'physical_delivery_confirmed': False}, ensure_ascii=False), flush=True)
         raise
     finally:
         done.set()
@@ -88,6 +96,10 @@ def execute(request):
 
 if __name__ == '__main__':
     from robot_gateway.station_video import camera_job
-    with camera_job():
-        result = execute(json.loads(base64.urlsafe_b64decode(sys.argv[1])))
+    request = json.loads(base64.urlsafe_b64decode(sys.argv[1]))
+    if request['operation'] == 'inspect':
+        result = execute(request)
+    else:
+        with camera_job():
+            result = execute(request)
     print('CARTRINA_RESULT='+json.dumps(result, ensure_ascii=False), flush=True)

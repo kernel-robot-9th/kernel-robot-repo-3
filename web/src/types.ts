@@ -20,6 +20,7 @@ export interface Task {
 }
 export interface Command {
   robot_id: string;
+  unload_engine?: string; basket_side?: 'left' | 'right';
   id: string; task_id: string; session_id: string; device_id: string; kind: string; status: string;
   sent_at: number | null; accepted_at: number | null;
   result: { kind: string; data: Record<string, unknown> } | null;

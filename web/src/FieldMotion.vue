@@ -12,11 +12,20 @@ defineEmits<{ tests: [] }>()
 const busy = ref(false), message = ref(''), error = ref('')
 const status = (id: string): FieldMotionStatus => props.state.hardware_motion?.[id] || {}
 const task = (id: string) => Object.values(props.state.tasks).find(t => t.robot_id === id &&
-  props.state.sessions[t.session_id]?.current_task === t.id)
+  (props.state.sessions[t.session_id]?.robot_runs?.[id] || props.state.sessions[t.session_id])?.current_task === t.id)
 const lastCommand = (id: string, kind: string) => Object.values(props.state.commands)
   .filter(c => c.robot_id === id && c.kind === kind).slice(-1)[0]
 const loading = (id: string) => lastCommand(id, 'PICK')
 const unloading = (id: string) => lastCommand(id, 'HANDOFF')
+const reviewingUnload = (id: string) => task(id)?.state === 'WAIT_UNLOAD_REVIEW'
+const unloadResult = (id: string) => unloading(id)?.result?.data || {}
+const unloadReason = (id: string) => {
+  const data = unloadResult(id)
+  const reason = data.reason || data.stop_reason || data.completion_reason || data.status
+  return ({ empty_scene_candidate: '연속 미검출 · 바구니 비움 확인 필요',
+    no_detections_rechecked: '3회 연속 미검출 · 바구니 비움 확인 필요',
+    pick_limit_reached: '최대 시도 수 도달 · 남은 상품 확인 필요' }[String(reason)] || '실행 결과와 바구니를 확인하세요')
+}
 const stageLabel = (id: string) => {
   const value = status(id)
   if (!value.reporting) return '상태 수신 대기'
@@ -60,19 +69,25 @@ function record(commandId: string, observation: string) {
         </dl>
         <p v-if="status(id).error" class="error">{{ status(id).error }}</p>
         <p v-if="status(id).inspection?.error" class="muted">{{ status(id).inspection?.error }}</p>
+        <div v-if="reviewingUnload(id)" role="status">
+          <p>{{ unloadReason(id) }}</p>
+          <p>지정한 {{ unloading(id)?.basket_side === 'left' ? '왼쪽' : '오른쪽' }} 수령 바구니에 이번 로봇의 상품을 모두 옮겼는지 확인하세요.</p>
+          <button :disabled="busy" @click="record(unloading(id)!.id, 'delivered')">전체 상품 실제 하역 확인 · 복귀</button>
+          <details><summary>하역 시도 기록</summary><pre>{{ JSON.stringify(unloadResult(id), null, 2) }}</pre></details>
+        </div>
         <details v-if="loading(id) || unloading(id)"><summary>실물 결과 기록 · 실행과 별도</summary>
           <template v-if="loading(id)">
             <button v-for="item in state.tasks[loading(id)!.task_id]?.items" :key="item.item_id" :disabled="busy" @click="record(loading(id)!.id, 'pick-' + item.slot)">슬롯 {{ item.slot + 1 }} 실제 적재 확인</button>
             <button :disabled="busy" @click="record(loading(id)!.id, 'arm_clear')">팔 이탈 기록</button>
           </template>
-          <button v-if="unloading(id)" :disabled="busy" @click="record(unloading(id)!.id, 'delivered')">실제 하역 확인</button>
+          <button v-if="unloading(id) && !reviewingUnload(id)" :disabled="busy || unloading(id)?.unload_engine === 'yolo'" @click="record(unloading(id)!.id, 'delivered')">실제 하역 확인</button>
         </details>
-        <button v-if="unloading(id)?.status === 'ACCEPTED'" :disabled="busy" @click="record(unloading(id)!.id, 'finish')">하역 정책 실행 종료</button>
+        <button v-if="unloading(id)?.status === 'ACCEPTED' && unloading(id)?.unload_engine !== 'yolo'" :disabled="busy" @click="record(unloading(id)!.id, 'finish')">하역 정책 실행 종료</button>
         <button v-if="task(id) && !state.sessions[task(id)!.session_id]?.error" class="secondary" :disabled="busy" @click="act('/admin/field/robots/' + id + '/stop', {}, '중단을 요청했습니다. 실제 정지는 별도 확인합니다.')">현재 작업 중단</button>
         <details v-if="status(id).result_file"><summary>주차 기록</summary><p class="record-path">{{ status(id).result_file }}</p><small>담당 노트북에 저장된 실행 기록입니다.</small></details>
       </article>
     </div>
-    <p class="muted">주행·주차·적재·출발은 실행 결과로 이어집니다. 실물 확인은 별도 기록입니다. 수신된 위치의 관측 시각을 함께 확인하세요.</p>
+    <p class="muted">C YOLO 하역은 실행 종료 후 실제 하역을 확인하면 복귀합니다. 수신된 위치의 관측 시각을 함께 확인하세요.</p>
     <VideoWall :token="token" :feed-ids="['load-a', 'load-b', 'handoff-front']" />
     <button class="secondary" @click="$emit('tests')">장비 테스트</button>
   </section>
