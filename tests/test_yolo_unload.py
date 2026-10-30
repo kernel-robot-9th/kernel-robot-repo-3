@@ -121,6 +121,22 @@ def test_field_init_is_offline_and_activation_preserves_act(tmp_path):
     assert list(tmp_path.glob('existing.json.*.bak'))
 
 
+def test_all_cli_dry_run_needs_no_sku_or_devices(tmp_path, capsys):
+    from robots.omx_yolo_unload.field import main
+    main(['init', '--directory', str(tmp_path), '--serial', '/dev/nonexistent',
+          '--camera', '/dev/nonexistent'])
+    capsys.readouterr()
+    main(['--hardware', str(tmp_path / 'gateway-c.yolo.hardware.json'), 'run',
+          '--robot', 'P2', '--side', 'left', '--max-picks', '1'])
+    output = capsys.readouterr().out
+    payload = json.loads(output[output.index('{'):])
+    assert payload['hardware_executed'] is False
+    assert payload['command']['items'] == []
+    assert payload['command']['selection_mode'] == 'all'
+    assert payload['command']['max_picks'] == 1
+    assert payload['command']['basket_side'] == 'left'
+
+
 def test_spatial_fit_roundtrip_and_reteach_do_not_accumulate(tmp_path, setup, monkeypatch):
     pytest.importorskip('cv2')
     from robots.omx_yolo_unload import field
@@ -184,6 +200,155 @@ def test_shared_pick_loop_dispatches_c_plan_for_each_fresh_item(tmp_path, monkey
     assert calls == [(0, 'right', 2048), (1, 'right', 2048), (2, 'right', 2048)]
     assert camera.read.call_count == 3
     assert len(result['executed_items']) == 3
+
+
+def test_roi_detector_restores_original_coordinates_and_filters_polygon(setup):
+    import numpy as np
+    from robots.omx_yolo_unload.vision import BasketDetector
+    job, _, _ = setup
+    job['pickup_regions_uv']['pinky-1'] = [[10, 10], [90, 10], [10, 90]]
+    detector = BasketDetector.__new__(BasketDetector)
+    detector.cfg, detector.imgsz = basket_job(job, 'pinky-1'), 640
+    detector.cfg['roi_padding_px'] = 0
+    def tensor(data):
+        return SimpleNamespace(cpu=lambda: SimpleNamespace(tolist=lambda: data))
+    boxes = SimpleNamespace(xyxy=tensor([[10, 10, 30, 30], [60, 60, 75, 75], [0, 0, 10, 10]]),
+                            conf=tensor([.8, .99, .2]), cls=tensor([0, 0, 0]))
+    detector.model = Mock()
+    detector.model.predict.return_value = [SimpleNamespace(orig_shape=(81, 81), boxes=boxes,
+                                                          names={0: 'rice_chip'})]
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    result = detector.predict(frame)
+    assert result == [Detection('rice_chip', .8, (20, 20, 40, 40))]
+    kwargs = detector.model.predict.call_args.kwargs
+    assert kwargs['source'].shape == (81, 81, 3)
+    assert kwargs['agnostic_nms'] is True
+    assert kwargs['conf'] == .5
+    # Padding clamps at the image boundary without broadening selection ROI.
+    detector.cfg['roi_padding_px'] = 64
+    detector.model.predict.return_value = [SimpleNamespace(orig_shape=(155, 155), boxes=boxes,
+                                                          names={0: 'rice_chip'})]
+    assert detector.predict(frame) == [Detection('rice_chip', .8, (10, 10, 30, 30))]
+    assert detector.model.predict.call_args.kwargs['source'].shape == (155, 155, 3)
+    detector.cfg['regions_uv'] = [[[0, 0], [201, 0], [0, 100]]]
+    with pytest.raises(ValueError, match='ROI'):
+        detector.predict(frame)
+
+
+@pytest.fixture
+def all_loop(tmp_path, monkeypatch, setup):
+    """Real C journal + shared loop, with every device boundary replaced."""
+    from robot_gateway.hardware import yolo
+    import omx_pick
+    import pick_robot
+    import pick_vision
+    job, calibration, det = setup
+    job['wrist_policy'] = 'fixed'
+    jobfile = tmp_path / 'job.json'
+    jobfile.write_text(json.dumps(job))
+    cfg = {'arm_name': 'single', 'serial_by_id': '/dev/C', 'camera_by_id': '/dev/camera',
+           'width': 200, 'height': 200, 'fps': 30, 'calibration_file': 'unused',
+           'poses_file': 'unused', 'pick_config': str(jobfile), 'selection_mode': 'all',
+           'journal_directory': str(tmp_path / 'runs')}
+    openings = []
+    class Context:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def read(self, *a): return 2048
+    def bus(*args, **kwargs):
+        openings.append(True)
+        return Context()
+    camera = Mock(read=Mock(return_value=(SimpleNamespace(shape=(200, 200, 3)), 0)))
+    monkeypatch.setattr(pick_vision, 'Camera', Context)
+    monkeypatch.setattr(pick_robot, 'DynamixelBus', bus)
+    monkeypatch.setattr(yolo, 'SharedCamera', lambda *a: camera)
+    monkeypatch.setattr(omx_pick, 'calibration_for', lambda *a: (calibration, None))
+    for method in ('prepare', 'enable', 'hold'):
+        monkeypatch.setattr(pick_robot.MotionController, method, lambda self: None)
+    arm = YoloUnloadArm(cfg, None, Mock(), {'rice': {'detector_class': 'rice_chip'}})
+    arm.saved = {'pickup_approach': [2048] * 5}
+    arm.prepare_job = lambda job, cmd, profile: basket_job(job, cmd['robot_id'])
+    detector = SimpleNamespace(model=SimpleNamespace(names={0: 'rice_chip'}), predict=Mock())
+    arm.detector_for = lambda *a: detector
+    arm.build_item_plan = Mock(return_value={'stages': []})
+    command = {'id': 'all-test', 'kind': 'HANDOFF', 'zone_id': 'handoff', 'robot_id': 'pinky-1',
+               'basket_side': 'right', 'items': [{'sku': 'not-detected', 'slot': 0}]}
+    # Exercise cancellation checks without sleeping in offline tests.
+    cancelled = Mock(is_set=Mock(return_value=False), wait=Mock(return_value=False))
+    return arm, command, detector, camera, openings, cancelled, det, calibration, jobfile
+
+
+def test_all_mode_rescans_and_does_not_credit_order_items(all_loop):
+    arm, command, detector, camera, openings, cancelled, det, _, _ = all_loop
+    detector.predict.side_effect = [[det], [], [det], [], [], []]
+    result = arm.execute(command, cancelled)
+    assert camera.read.call_count == 6
+    assert len(openings) == 1
+    assert arm.build_item_plan.call_count == 2
+    assert result['executed_items'] == []
+    assert len(result['attempted_items']) == 2
+    assert result['stop_reason'] == 'no_detections_rechecked'
+    assert result['empty_scene_candidate'] is True
+    assert result['physical_delivery_confirmed'] is False
+    assert result['operator_review_required'] is True
+    assert result['basket_side'] == 'right'
+    assert json.loads(arm.journal.read_text())['status'] == 'awaiting_operator_review'
+    # The same job must look again, not assume previous non-detection meant empty.
+    detector.predict.side_effect = [[det], [], [], []]
+    result = arm.execute(command, cancelled)
+    assert len(result['attempted_items']) == 3
+    assert len({i['attempt_id'] for i in result['attempted_items']}) == 3
+    assert arm.executed == []
+
+
+def test_all_mode_empty_scene_never_opens_motors(all_loop):
+    arm, command, detector, camera, openings, cancelled, *_ = all_loop
+    detector.predict.return_value = []
+    result = arm.execute(dict(command, items=[]), cancelled)
+    assert camera.read.call_count == 3
+    assert openings == []
+    assert result['attempted_items'] == []
+    assert result['physical_delivery_confirmed'] is False
+
+
+def test_all_mode_bounds_repeated_missed_grasps(all_loop):
+    arm, command, detector, camera, _, cancelled, det, *_ = all_loop
+    detector.predict.return_value = [det]
+    result = arm.execute(dict(command, max_picks=2), cancelled)
+    assert camera.read.call_count == 2
+    assert len(result['attempted_items']) == 2
+    assert result['stop_reason'] == 'pick_limit_reached'
+    assert result['empty_scene_candidate'] is False
+
+
+@pytest.mark.parametrize('failure', ['missing_z', 'wrong_resolution', 'cancelled'])
+def test_all_mode_preflight_failures_do_not_open_motors(all_loop, failure):
+    arm, command, detector, _, openings, cancelled, det, calibration, jobfile = all_loop
+    detector.predict.return_value = [det]
+    if failure == 'missing_z':
+        job = json.loads(jobfile.read_text())
+        job['classes']['rice_chip']['pick_z_mm'] = None
+        jobfile.write_text(json.dumps(job))
+    elif failure == 'wrong_resolution':
+        calibration['width'] = 201
+    else:
+        cancelled.is_set.return_value = True
+    with pytest.raises((ValueError, RuntimeError)):
+        arm.execute(command, cancelled)
+    assert openings == []
+    assert json.loads(arm.journal.read_text())['status'] == 'interrupted'
+
+
+def test_all_mode_partial_failure_records_attempts_without_sku_completion(all_loop):
+    arm, command, detector, _, _, cancelled, det, *_ = all_loop
+    detector.predict.side_effect = [[det], RuntimeError('camera disconnected')]
+    with pytest.raises(RuntimeError, match='camera disconnected'):
+        arm.execute(command, cancelled)
+    history = json.loads(arm.journal.read_text())
+    assert len(history['attempted_items']) == 1
+    assert history['executed_items'] == arm.executed == []
+    assert history['status'] == 'interrupted'
 
 
 def test_single_plane_calibration_wrapper_writes_c_paths(tmp_path):

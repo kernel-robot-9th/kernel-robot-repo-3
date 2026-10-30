@@ -48,7 +48,8 @@ def init(args):
         'weights': str(args.weights.expanduser().resolve()), 'pick_config': str(job_path),
         'samples_file': str(root / 'xy_samples.csv'), 'calibration_file': str(root / 'xy_calibration.json'),
         'poses_file': str(root / 'poses.json'), 'journal_directory': str(root / 'runs'),
-        'video_channel': 'handoff-front', 'from_folded': False}
+        'video_channel': 'handoff-front', 'from_folded': False,
+        'selection_mode': 'all', 'max_picks': 12}
     hardware = {'node_id': 'gateway-c', 'unload_engine': 'yolo', 'armed': False,
         'video': {'transport': 'jpeg', 'fps': 5}, 'evidence_directory': str(root / 'evidence'),
         'state_directory': str(root / 'worker'), 'yolo_unload': cfg}
@@ -64,14 +65,16 @@ def saved(profile):
 
 
 def capture(cfg, profile, job, robot, label, index=0):
-    from pick_vision import Camera, Detector
+    from pick_vision import Camera
+    from .vision import BasketDetector
     with camera_job(), Camera(profile) as camera:
         frame, _ = camera.read()
     height, width = frame.shape[:2]
     if (width, height) != (profile.width, profile.height):
         raise ValueError('카메라 실제 해상도가 C 설정과 다릅니다')
-    detections = Detector(job, cfg['weights']).predict(frame)
-    return frame, choose(detections, basket_job(job, robot), label, width, height, index)
+    scoped = basket_job(job, robot)
+    detections = BasketDetector(scoped, cfg['weights']).predict(frame)
+    return frame, choose(detections, scoped, label, width, height, index)
 
 
 def geometry_hash(calibration):
@@ -244,8 +247,10 @@ def main(argv=None):
             p.add_argument('--speed', type=float, default=10)
         if action == 'run':
             p.add_argument('--side', choices=('left', 'right'), required=True)
-            p.add_argument('--skus', nargs='+', required=True)
-            p.add_argument('--job-id', default=None, help='같은 ID 재실행은 완료한 동작 제외')
+            p.add_argument('--skus', nargs='+', default=[], help='ordered 모드의 SKU 목록')
+            p.add_argument('--selection', choices=('all', 'ordered'), default=None)
+            p.add_argument('--max-picks', type=int, default=None, help='all 모드의 실행당 최대 궤적 수')
+            p.add_argument('--job-id', default=None, help='ordered: 완료 항목 제외 / all: 현재 영상 재검출')
             p.add_argument('--execute', action='store_true', help='실물 하역 실행')
     p = sub.add_parser('jog', help='현재 위치에서 WASD/RF 조절; Enter 종료')
     p.add_argument('--speed', type=float, default=10)
@@ -337,9 +342,12 @@ def main(argv=None):
     elif args.action == 'detect':
         import cv2
         import numpy as np
-        from pick_vision import Camera, Detector
-        detector = Detector(job, cfg['weights'])
-        roi = basket_job(job, args.robot)['regions_uv'][0]
+        from pick_vision import Camera
+        from .vision import BasketDetector
+        scoped = basket_job(job, args.robot)
+        detector = BasketDetector(scoped, cfg['weights'])
+        roi = scoped['regions_uv'][0]
+        print(f"C ROI crop / confidence >= {job['confidence']:.2f} / imgsz {job['imgsz']} / Q 종료", flush=True)
         try:
             with camera_job(), Camera(profile) as camera:
                 while True:
@@ -355,11 +363,17 @@ def main(argv=None):
     elif args.action == 'run':
         from server.catalog import load_products
         products = load_products()
+        selection = args.selection or cfg.get('selection_mode', 'ordered')
+        if selection == 'ordered' and not args.skus: parser.error('ordered 모드는 --skus가 필요합니다')
+        if args.max_picks is not None and not 1 <= args.max_picks <= 100:
+            parser.error('--max-picks는 1..100이어야 합니다')
         if any(s not in products for s in args.skus): parser.error('등록되지 않은 SKU')
         cid = args.job_id or str(uuid.uuid4())
         command = dict(id=cid, kind='HANDOFF', mode='hardware', zone_id='handoff', device_id='omx-c',
             robot_id=args.robot, basket_side=args.side, basket_id='field-' + args.side,
             items=[{'sku': sku, 'slot': i, 'item_id': cid + '-' + str(i)} for i, sku in enumerate(args.skus)])
+        command['selection_mode'] = selection
+        if args.max_picks is not None: command['max_picks'] = args.max_picks
         print('job-id:', cid, flush=True)
         if not args.execute:
             print(json.dumps({'hardware_executed': False, 'command': command}, ensure_ascii=False, indent=2))
