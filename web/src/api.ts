@@ -52,7 +52,7 @@ export const labels: Record<string, string> = {
   SHOPPING: '쇼핑 중', CHECKOUT_REQUESTED: '주문 마감', DELIVERING: '인계 준비',
   COMPLETED: '시연 흐름 완료', ERROR: '작업 중단', RECOVERY_REQUIRED: '복구 확인 필요',
   QUEUED: '작업 대기', WAIT_ZONE: '구역 사용 대기', MOVING: '이동 중',
-  WAIT_LOADED: '적재 완료 · 구역 대기', WAIT_UNLOAD: 'C 도착 · 하역 대기', WAIT_STOP: '정차 확인 대기', WAIT_BASKET: '장바구니 대기', ARM_WORK: '로봇팔 작업',
+  WAIT_LOADED: '적재 완료 · 구역 대기', WAIT_UNLOAD: 'C 도착 · 하역 대기', WAIT_UNLOAD_REVIEW: '하역 실행 종료 · 실물 확인 대기', WAIT_STOP: '정차 확인 대기', WAIT_BASKET: '장바구니 대기', ARM_WORK: '로봇팔 작업',
   WAIT_ARM_CLEAR: '팔 이탈 확인 대기', LEAVING: '구역에서 이동', WAIT_EXIT: '구역 이탈 확인 대기', DONE: '작업 완료',
   NAVIGATE: '지점 이동', PICK: '집기·적재', HANDOFF: '고객 인계', LEAVE: '구역 출발', STOP: '중단 요청', LOAD: '적재',
   CREATED: '전송 대기', SENT: '전송됨', ACCEPTED: '수락됨', SUCCEEDED: '실행 완료', FAILED: '실패 보고',

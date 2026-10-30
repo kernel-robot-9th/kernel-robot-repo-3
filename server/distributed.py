@@ -163,6 +163,24 @@ class DistributedEngine(Engine):
     def field_observe(self, command_id, observation, operator):
         require(command_id in self.state['commands'], '명령을 찾을 수 없습니다', 404)
         command = self.state['commands'][command_id]
+        result = (command.get('result') or {}).get('data', {})
+        yolo_handoff = command['kind'] == 'HANDOFF' and (
+            command.get('unload_engine') == 'yolo' or result.get('engine') == 'yolo_unload')
+        if observation == 'delivered' and yolo_handoff:
+            recorded = self.state.get('operator_observations', {}).get(command_id, {})
+            if observation in recorded:
+                return {'recorded': True, 'duplicate': True}
+            task = self.state['tasks'][command['task_id']]
+            session = self._execution_session(command['session_id'], command['robot_id'])
+            require(self.mode == 'hardware' and command['status'] == 'SUCCEEDED'
+                    and task['state'] == 'WAIT_UNLOAD_REVIEW'
+                    and session['current_task'] == task['id'] and not session['error'],
+                    '현재 하역 실행 종료 후 실제 상품 인계를 확인하세요')
+            # Operator confirmation concerns this command's goods, not detector order or attempt count.
+            self._confirm_items(command, {'confirmed_items': command['items'],
+                                'basket_id': command['basket_id']}, complete=True, physical=True)
+            task['state'] = 'LEAVING'
+            self._command(task, 'LEAVE', task['robot_id'])
         data = {'observation': observation}
         if observation == 'finish':
             data['finished'] = True

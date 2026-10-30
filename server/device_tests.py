@@ -98,7 +98,8 @@ class Bench:
                 if self.e.mode == 'hardware':
                     require(parameters['slot'] in report.get('slots', {}).get(parameters['robot_id'], []), '선택한 적재 슬롯 자세가 등록되지 않았습니다')
             else:
-                require(node == 'gateway-c' and set(parameters) == {'side', 'skus'}, '하역 시험 입력 오류', 422)
+                require(node == 'gateway-c' and set(parameters) in ({'side', 'skus'}, {'side', 'skus', 'robot_id'}), '하역 시험 입력 오류', 422)
+                require(parameters.get('robot_id', 'pinky-1') in ('pinky-1', 'pinky-2'), '바구니 로봇 오류', 422)
                 require(parameters['side'] in report.get('sides', []), '해당 방향의 모델이 준비되지 않았습니다')
                 require(isinstance(parameters['skus'], list) and 1 <= len(parameters['skus']) <= 3
                         and all(s in self.e.products for s in parameters['skus']), '하역 상품은 1~3개를 선택하세요', 422)
@@ -245,7 +246,11 @@ class Bench:
         require(not success or (job['result'] and job['result']['kind'] == 'FINISHED' and not job['stop_requested_at']),
                 '중단·실행 오류를 성공으로 기록할 수 없습니다')
         if success and job['kind'] == 'HANDOFF':
-            require(job['stopped'] is not None and job['observation'] is not None, '담기 관측과 실제 정책 정지 피드백이 필요합니다')
+            if job['result']['data'].get('engine') == 'yolo_unload':
+                job['observation'] = {'source': 'operator', 'operator': operator, 'at': self.e.clock(),
+                                      'facts': {'physical_delivery_confirmed': True}}
+            else:
+                require(job['stopped'] is not None and job['observation'] is not None, '담기 관측과 실제 정책 정지 피드백이 필요합니다')
         source = 'simulation' if self.e.mode == 'mock' else 'operator'
         if not job['stopped']:
             job['stopped'] = {'source': source, 'operator': operator, 'at': self.e.clock()}

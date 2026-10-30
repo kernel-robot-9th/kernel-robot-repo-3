@@ -26,9 +26,12 @@ def ssh(config, host, command, interactive=False):
 def station_command(config, zone, request):
     station = config['stations'][zone]
     payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
-    python = station.get('parking_python', station['python']) if request['operation'] != 'arm' else station['python']
+    python = station.get('parking_python', station['python']) if request['operation'] in ('parking', 'inventory') else station['python']
     command = ('cd '+shlex.quote(station['root'])+' && bash scripts/run_pinky_station.sh '+
                shlex.quote(python)+' '+shlex.quote(payload))
+    if zone == 'C' and request['operation'] in ('arm', 'inspect'):
+        command = ('cd '+shlex.quote(station['root'])+' && env -u PYTHONPATH -u PYTHONHOME '+
+                   shlex.quote(python)+' -u -m scripts.pinky_station '+shlex.quote(payload))
     return ssh(config, station['host'], command, request.get('interactive', False))
 
 
