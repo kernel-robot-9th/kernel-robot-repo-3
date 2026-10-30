@@ -32,7 +32,8 @@ def validate(config, *, check_files=True, require_mobile=True, check_slots=True)
                     errors.append('Pinky 프로필과 로봇 ID 불일치: ' + robot)
         except (OSError, ValueError, KeyError) as exc:
             errors.append('Pinky 현장 설정: ' + str(exc)[:150])
-    arm = config.get('act') if node == 'gateway-c' else config.get('yolo')
+    unload = node == 'gateway-c' and config.get('unload_engine') == 'yolo'
+    arm = config.get('yolo_unload') if unload else config.get('act') if node == 'gateway-c' else config.get('yolo')
     if not isinstance(arm, dict):
         return errors + ['담당 로봇팔 설정 필요']
     def path(key, prefix=None):
@@ -42,7 +43,7 @@ def validate(config, *, check_files=True, require_mobile=True, check_slots=True)
         elif check_files and not Path(value).expanduser().exists():
             errors.append(key + ': 현장 파일/장치 없음')
     path('serial_by_id', '/dev/serial/by-id/')
-    if node == 'gateway-c':
+    if node == 'gateway-c' and not unload:
         for name in ('front_by_id', 'wrist_by_id'):
             path(name, '/dev/v4l/by-id/')
         path('calibration_dir')
@@ -63,7 +64,21 @@ def validate(config, *, check_files=True, require_mobile=True, check_slots=True)
         path('camera_by_id', '/dev/v4l/by-id/')
         for name in ('pick_config', 'calibration_file', 'poses_file'):
             path(name)
-        for robot in (('pinky-1', 'pinky-2') if check_slots else ()):
+        if unload:
+            path('weights')
+            if check_files:
+                try:
+                    from robots.omx_yolo_unload.core import POSES, basket_job
+                    job = json.loads(Path(arm['pick_config']).expanduser().read_text())
+                    poses = json.loads(Path(arm['poses_file']).expanduser().read_text())['poses']
+                    for robot in ('pinky-1', 'pinky-2'):
+                        basket_job(job, robot)
+                    missing = [name for name in POSES if name not in poses]
+                    if missing:
+                        errors.append('C 하역 자세 미기록: ' + ', '.join(missing))
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    errors.append('C YOLO 기록 확인: ' + str(exc)[:150])
+        for robot in (('pinky-1', 'pinky-2') if check_slots and not unload else ()):
             slots = arm.get('drop_slots', {}).get(robot, {})
             if set(slots) != {'0', '1', '2'} or any(not isinstance(p, dict) or not p.get('approach') or not p.get('release') for p in slots.values()):
                 errors.append(robot + ': 적재 위치 3곳의 접근·놓기 자세 이름 필요')

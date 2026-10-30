@@ -67,19 +67,22 @@ class Bench:
                 require(job['signature'] == signature, '같은 요청 ID에 다른 시험 내용입니다')
                 return deepcopy(job)
         require(len(self.state['jobs']) < 500, '현재 실행의 시험 기록 한도입니다. 기록을 보관하고 새 실행을 준비하세요')
-        require(not any(j['node_id'] == node and (j['status'] not in FINAL or (j['kind'] in MOTION and j['released_at'] is None))
-                        for j in self.state['jobs'].values()), '해당 중계의 이전 시험 종료·확인을 먼저 완료하세요')
+        if kind != 'PICK':
+            require(not any(j['node_id'] == node and (j['status'] not in FINAL or (j['kind'] in MOTION and j['released_at'] is None))
+                            for j in self.state['jobs'].values()), '해당 중계의 이전 시험 종료·확인을 먼저 완료하세요')
         report = self.state['nodes'].get(node, {})
         gateway = self.e.state['gateways'][node]
         if kind in MOTION:
             road = self.e.state.get('road', {})
-            require(not road.get('active') and not road.get('blocked'), '주문 이동 또는 이동 복구가 진행 중입니다')
+            if kind != 'PICK':
+                require(not road.get('active') and not road.get('blocked'), '주문 이동 또는 이동 복구가 진행 중입니다')
             require(kind != 'NAVIGATE' or not road, 'v4 주문 통합에서는 독립 v3 이동 시험을 실행하지 않습니다. 별도 기본 미리보기를 사용하세요')
             require(prepared is True, '고정 바구니·작업 영역 준비를 확인하세요')
-            require(not self.state['hold'], '이전 동작 시험의 정지·원위치 확인이 필요합니다')
-            require(not any(t['state'] not in {'DONE', 'CANCELLED'} for t in self.e.state['tasks'].values())
-                    and not any(u['state'] not in {'DELIVERED', 'CANCELLED'} for u in self.e.state['units'].values())
-                    and not any(s['error'] for s in self.e.state['sessions'].values()), '주문 작업 또는 복구할 상태가 남아 있습니다')
+            if kind != 'PICK':
+                require(not self.state['hold'], '이전 동작 시험의 정지·원위치 확인이 필요합니다')
+                require(not any(t['state'] not in {'DONE', 'CANCELLED'} for t in self.e.state['tasks'].values())
+                        and not any(u['state'] not in {'DELIVERED', 'CANCELLED'} for u in self.e.state['units'].values())
+                        and not any(s['error'] for s in self.e.state['sessions'].values()), '주문 작업 또는 복구할 상태가 남아 있습니다')
             require(report.get('instance_id') == gateway.get('instance_id') and gateway.get('connected')
                     and self.e.clock() - report.get('at', 0) < 5, '시험 실행부의 최신 준비 상태가 필요합니다')
             require(report.get('allow_motion') is True, '동작 시험 실행부가 준비되지 않았습니다')
@@ -119,7 +122,7 @@ class Bench:
                        receiver_epoch=self.e.receiver_epoch, created_monotonic=self.e.receiver_clock(),
                        telemetry=None, telemetry_signature=None,
                        timeout_seconds=route(parameters['route_id']).duration / parameters['rate'] + 30)
-        if kind in MOTION:
+        if kind in MOTION and kind != 'PICK':
             self.state['hold'] = jid
         self.log(job, 'CREATED', {'kind': kind, 'parameters': parameters, 'prepared_by_operator': prepared, 'simulate_failure': simulate_failure})
         return deepcopy(job)
@@ -197,6 +200,8 @@ class Bench:
                 return {'received': True}
             job.update(ended_at=self.e.clock(), result={'kind': kind, 'data': deepcopy(data)},
                        status='WAIT_REVIEW' if job['kind'] in MOTION else ('SUCCEEDED' if kind == 'FINISHED' else 'FAILED'))
+            if job['kind'] == 'PICK':
+                job['released_at'] = self.e.clock()
             stopped = data.get('stop_feedback', {})
             if all(stopped.get(k) is True for k in ('policy_stopped', 'motion_stopped', 'hold_confirmed', 'torque_enabled')):
                 job['stopped'] = {'source': 'simulation' if self.e.mode == 'mock' else 'feedback', 'at': self.e.clock(), 'data': stopped}

@@ -135,7 +135,7 @@ function addSku(value: string) { if (value && handoffSkus.value.length < 3) hand
       </template>
       <label v-if="motion" class="check-line"><input v-model="prepared" type="checkbox" /> 바구니 고정 · 상품·작업 영역 준비 완료</label>
       <label v-if="motion && state?.mode === 'mock'" class="check-line"><input v-model="simulateFailure" type="checkbox" /> 이번 모의 동작에서 실패 응답 시험</label>
-      <button class="primary" :disabled="busy || !!pending || !!connectionError || !state?.distributed || (motion && (!prepared || !report?.online || !report?.allow_motion || !!state?.hold))" @click="send()">{{ motion ? '선택한 동작 시험 요청' : '확인 요청' }}</button>
+      <button class="primary" :disabled="busy || !!pending || !!connectionError || !state?.distributed || (motion && (!prepared || !report?.online || !report?.allow_motion || (kind !== 'PICK' && !!state?.hold)))" @click="send()">{{ motion ? '선택한 동작 시험 요청' : '확인 요청' }}</button>
       <div v-if="pending" class="alert danger">이전 요청의 응답을 확인 중입니다. 같은 요청 ID로 재전송하면 중복 실행하지 않습니다. <button :disabled="busy" @click="send(true)">동일 요청 재전송</button></div>
     </div>
 

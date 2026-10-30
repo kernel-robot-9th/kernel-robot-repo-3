@@ -32,6 +32,20 @@ def station_command(config, zone, request):
     return ssh(config, station['host'], command, request.get('interactive', False))
 
 
+def inspect_station(zone):
+    request = {'operation': 'inspect', 'zone': zone, 'job_id': str(uuid.uuid4())}
+    try:
+        process = subprocess.run(station_command(configuration(), zone, request),
+                                 text=True, capture_output=True, timeout=5)
+        if process.returncode:
+            raise RuntimeError(f'{zone} 현장 설정 확인 실패')
+        result = next(line.partition('=')[2] for line in process.stdout.splitlines()
+                      if line.startswith('CARTRINA_RESULT='))
+        return json.loads(result)
+    except (OSError, subprocess.TimeoutExpired, StopIteration, ValueError) as exc:
+        raise RuntimeError(f'{zone} 현장 연결·설정 확인 실패') from exc
+
+
 def run_station(zone, request, config=None, cancelled=None, frames=None):
     config = config or configuration()
     request = dict(request, job_id=str(uuid.uuid4()), stream_frames=frames is not None)
@@ -90,16 +104,16 @@ class RemoteArm:
         self.frames = frames
 
     def execute(self, command, cancelled):
-        if command['kind'] == 'PICK':
+        if command['kind'] in ('PICK', 'HANDOFF'):
             self.executed = []
         try:
             result = run_station(self.zone, {'operation': 'arm', 'zone': self.zone, 'command': command},
                                  cancelled=cancelled, frames=self.frames)
         except StationError as exc:
-            if command['kind'] == 'PICK':
+            if command['kind'] in ('PICK', 'HANDOFF'):
                 self.executed = exc.executed_items.copy()
             raise
-        if command['kind'] == 'PICK':
+        if command['kind'] in ('PICK', 'HANDOFF'):
             self.executed = result.get('executed_items', []).copy()
         return result
 

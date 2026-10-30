@@ -40,8 +40,8 @@ class Executor:
             from .station_remote import RemoteArm
             self.arm = RemoteArm(config['remote_arm_zone'], frames)
         elif config['node_id'] == 'gateway-c':
-            from .act import ActArm
-            self.arm = ActArm(config['act'], evidence, frames)
+            from robots.omx_yolo_unload.runtime import create_arm
+            self.arm = create_arm(config, evidence, frames)
         else:
             from .yolo import YoloArm
             self.arm = YoloArm(config['yolo'], evidence, frames, load_products())
@@ -131,8 +131,10 @@ def main():
     status = FieldStatus()
     evidence = FieldEvidence(config['evidence_directory'], status)
     executor = Executor(config, evidence, frames, status)
-    from robot_gateway.test_agent import TestAgent, HardwareTrials
-    trial = TestAgent(client, identity, path.with_name('device-tests.json'), HardwareTrials(config, frames, execute=False))
+    from robot_gateway.test_agent import TestAgent, HardwareTrials, RemoteHardwareTrials
+    hardware_trials = (RemoteHardwareTrials(config, frames) if config.get('remote_arm_zone') in ('A', 'B', 'C')
+                       else HardwareTrials(config, frames, execute=config.get('unload_engine') == 'yolo'))
+    trial = TestAgent(client, identity, path.with_name('device-tests.json'), hardware_trials)
     state = {'run_id': hello['run_id'], 'inflight': {}, 'pending': []}
     jobs = {}
     pool = ThreadPoolExecutor(max_workers=4)
@@ -159,7 +161,7 @@ def main():
                             event = future.result()
                         except Exception as exc:
                             event = make_event(command, 'FAILED', {'executed_items': getattr(exc, 'executed_items', getattr(executor.arm, 'executed', [])).copy()
-                                if command['kind'] == 'PICK' else [], 'basket_id': command.get('basket_id'), 'reason': str(exc)[:200]})
+                                if command['kind'] in ('PICK', 'HANDOFF') else [], 'basket_id': command.get('basket_id'), 'reason': str(exc)[:200]})
                         state['pending'].append(event)
                         state['inflight'].pop(cid, None); jobs.pop(cid); persist()
                 if state['pending']:

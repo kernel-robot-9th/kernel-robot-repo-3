@@ -42,7 +42,8 @@ class HardwareTrials:
         except Exception as exc:
             issues = [f'설정 검사 실패: {type(exc).__name__}']
         node = self.config.get('node_id')
-        arm = self.config.get('act') if node == 'gateway-c' else self.config.get('yolo')
+        unload = node == 'gateway-c' and self.config.get('unload_engine') == 'yolo'
+        arm = self.config.get('yolo_unload') if unload else self.config.get('act') if node == 'gateway-c' else self.config.get('yolo')
         arm = arm or {}
         checks = []
         for name in ('serial_by_id', 'camera_by_id', 'front_by_id', 'wrist_by_id', 'calibration_file', 'poses_file', 'calibration_dir'):
@@ -56,7 +57,8 @@ class HardwareTrials:
         if node != 'gateway-c' and not any(slots.values()):
             issues.append('시험할 바구니·슬롯의 접근/놓기 자세를 한 곳 이상 등록하세요')
         self.report = {'allow_motion': self.enabled and not issues, 'operations': ['HANDOFF'] if node == 'gateway-c' else ['PICK'],
-                       'sides': [s for s, m in models.items() if m], 'issues': issues,
+                       'sides': ['left', 'right'] if unload else [s for s, m in models.items() if m], 'issues': issues,
+                       'unload_engine': self.config.get('unload_engine', 'act'),
                        'checks': checks, 'execution_enabled': self.enabled, 'camera_frames': '미확인',
                        'slots': slots,
                        'robot_connection': '미확인', 'model_inference': '미확인', 'python': platform.python_version(),
@@ -77,8 +79,8 @@ class HardwareTrials:
             raise RuntimeError('선택한 슬롯의 자세가 등록되지 않았습니다')
         if self.arm is None:
             if job['kind'] == 'HANDOFF':
-                from .hardware.act import ActArm
-                self.arm = ActArm(self.config['act'], self, self.frames)
+                from robots.omx_yolo_unload.runtime import create_arm
+                self.arm = create_arm(self.config, self, self.frames)
             else:
                 from .hardware.yolo import YoloArm
                 from server.catalog import load_products
@@ -89,15 +91,49 @@ class HardwareTrials:
                    'task_id': job['id'], 'session_id': job['id'], 'basket_id': 'test-' + job['id']}
         if job['kind'] == 'HANDOFF':
             side = params['side']
-            model = self.config['act']['models'].get(side)
-            if not model:
-                raise RuntimeError('해당 방향 모델 없음')
-            command.update(basket_side=side, model_id=model['id'])
+            command.update(basket_side=side)
+            if self.report.get('unload_engine') != 'yolo' and not self.config.get('remote_arm_zone'):
+                model = self.config['act']['models'].get(side)
+                if not model:
+                    raise RuntimeError('해당 방향 모델 없음')
+                command['model_id'] = model['id']
         self.command = command
         result = self.arm.execute(command, cancelled)
         if job['kind'] == 'HANDOFF':
             result['stop_feedback'] = self.arm.stopped(command, cancelled)
         return result
+
+
+class RemoteHardwareTrials(HardwareTrials):
+    """Use the station's settings and the existing remote arm for tests."""
+    def __init__(self, config, frames):
+        from .hardware.station_remote import RemoteArm
+        self.config, self.frames, self.zone = config, frames, config['remote_arm_zone']
+        self.enabled, self.observation, self.command = True, None, None
+        self.arm = RemoteArm(self.zone, frames)
+        self.report = {'allow_motion': False, 'operations': ['PICK'], 'slots': {},
+                       'issues': [self.zone + ' 현장 설정 확인 중'], 'checks': []}
+        self.closing = threading.Event()
+        self.refresh_thread = threading.Thread(target=self.refresh, daemon=True)
+        self.refresh_thread.start()
+
+    def inspect(self):
+        from .hardware.station_remote import inspect_station
+        try:
+            self.report = inspect_station(self.zone)
+        except Exception as exc:
+            self.report = {'allow_motion': False, 'operations': ['PICK'], 'slots': {},
+                           'issues': [str(exc)], 'checks': [], 'execution_enabled': True}
+        return self.report
+
+    def refresh(self):
+        while not self.closing.is_set():
+            self.inspect()
+            self.closing.wait(10)
+
+    def close(self):
+        self.closing.set()
+        self.refresh_thread.join(timeout=6)
 
 
 class TestAgent:
@@ -276,3 +312,5 @@ class TestAgent:
         self.cancelled.set()
         self.ending.set()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        if self.hardware and hasattr(self.hardware, 'close'):
+            self.hardware.close()

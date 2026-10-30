@@ -44,8 +44,9 @@ def deploy(zone, config):
         for path in FILES:
             if Path(path).exists(): put(path, Path(path).read_bytes())
         if zone == 'C':
-            for path in ['robot_gateway/hardware/act.py', 'robots/omx_act/runtime.py']:
-                put(path, Path(path).read_bytes())
+            from scripts.package_c_yolo import source_files
+            for path in source_files():
+                put(str(path), path.read_bytes())
         path = 'runtime/field/pinky-parking.json'
         try:
             with sftp.open(root+'/'+path) as f: parking = json.loads(f.read())
@@ -53,8 +54,9 @@ def deploy(zone, config):
             parking = json.loads(Path('config/pinky-parking.example.json').read_text())
         if zone == 'C':
             with sftp.open(root+'/runtime/field/gateway-c.hardware.json') as f: hardware = json.loads(f.read())
-            parking['zones']['C']['camera'] = {'camera_by_id': hardware['act']['front_by_id'],
-                                              'width':1920,'height':1080,'fps':30}
+            if hardware.get('unload_engine') != 'yolo':
+                parking['zones']['C']['camera'] = {'camera_by_id': hardware['act']['front_by_id'],
+                                                  'width':1920,'height':1080,'fps':30}
         put(path, json.dumps(parking, indent=2).encode())
         if zone in ('B', 'C'):
             node = 'gateway-'+zone.lower()
