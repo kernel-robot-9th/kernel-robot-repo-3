@@ -1,6 +1,6 @@
 # C 노트북 Codex 인계 — YOLO 하역 현장 완성
 
-아래 내용을 C 노트북의 Codex에 통째로 붙여 넣는다.
+2026-10-30: C 현장 캘리·단독 하역 및 관제 연결, GitHub main 병합 완료. 최신 운영 상태는 [CONTROL_HANDOFF_STATUS.md](CONTROL_HANDOFF_STATUS.md)를 우선한다. 아래 초기 준비 순서를 처음부터 반복하지 않는다.
 
 ```text
 카트리나 프로젝트 C 구역 YOLO 하역을 이 노트북에서 캘리·자세 기록·실물 시험하고 필요한 코드를 수정하려 한다.
@@ -11,7 +11,7 @@
 - 프로젝트: /home/team2/robot_shopping/kernel-robot-repo-3
 - 저장소: https://github.com/kernel-robot-9th/kernel-robot-repo-3
 - 준비 브랜치: codex/c-yolo-unload-20261030
-- main이 아니라 위 브랜치를 받아야 이번 C 코드가 있다.
+- 이번 C 코드는 main에도 병합됐다. 현장 변경이 남아 있으므로 기존 브랜치와 작업 파일을 확인한 뒤 병합한다.
 - 먼저 git status와 현재 브랜치를 확인하고, C 로컬 변경·현장 JSON·모델·데이터를 보존한다. reset --hard, clean, 강제 checkout 하지 않는다.
 - 로컬 변경이 없다면 git fetch origin 후 git switch --track origin/codex/c-yolo-unload-20261030으로 받는다. 이미 로컬 브랜치가 있으면 switch 후 git pull --ff-only origin codex/c-yolo-unload-20261030을 사용한다. 변경이 있으면 백업하고 필요한 코드만 병합한다.
 - 인증 문제는 초기에 확인한다. 웹 파일 업로드로 우회하지 않는다.
@@ -73,7 +73,7 @@
 - 하역 결과에는 physical_delivery_confirmed=false / operator_review_required가 남는다. 관제의 최종 완료 처리가 실제 인계 확인과 어떻게 연결되는지 확인한다.
 
 [현재 검증 수준·결과 인계]
-- 관제에서 코드와 오프라인 시험을 준비했으며, C 장비 배포·캘리·실물 하역 성공은 아직 확인하지 않았다.
+- C 단독 하역 성공은 사용자 확인, P1 네 품목 보간 5점과 관제 연결 완료. P2 동일 보간 적용은 추가 요청 사항이며 전체 주문 실물 시험은 아직이다.
 - 로컬 검증과 전체 주문 성공을 구분한다. 추가 코드 수정은 간결하게 하고 해당 변경만 필요한 시험을 한다.
 - 마무리할 때 수정 파일, 실제 Python·카메라·모터·모델 경로, 사용한 설정/캘리/자세, 상품·좌우·P1/P2별 실물 결과, 미검증 항목, 관제에서 해야 할 변경을 정리한다. 비밀값은 제외한다.
 - 현장 JSON은 ignore되어 있으므로 Git 푸시와 별도로 백업·전달할 파일 목록을 남긴다. 커밋 메시지는 한국어로 작성한다.
